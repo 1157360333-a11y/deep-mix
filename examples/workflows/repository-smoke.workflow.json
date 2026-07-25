@@ -1,0 +1,22 @@
+{
+  "name": "repository-smoke",
+  "description": "Read package metadata and record a deterministic smoke-check note.",
+  "steps": [
+    {
+      "id": "read-package",
+      "type": "tool",
+      "toolName": "read_file",
+      "arguments": {
+        "path": "package.json"
+      },
+      "onError": "abort"
+    },
+    {
+      "id": "record-complete",
+      "type": "governor",
+      "action": "record_message",
+      "message": "Repository smoke workflow completed.",
+      "onError": "abort"
+    }
+  ]
+}

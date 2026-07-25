@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "name": "github",
+      "type": "github",
+      "enabled": true,
+      "toolSelection": {
+        "keywords": [
+          "github",
+          "repo",
+          "repository",
+          "issue",
+          "pr",
+          "pull request"
+        ]
+      },
+      "options": {
+        "apiBaseUrl": "https://api.github.com",
+        "userAgent": "Deep-Mix/1.0"
+      }
+    },
+    {
+      "name": "playwright",
+      "type": "playwright",
+      "enabled": true,
+      "toolSelection": {
+        "keywords": [
+          "browser",
+          "page",
+          "url",
+          "website",
+          "screenshot",
+          "capture"
+        ]
+      },
+      "options": {
+        "screenshotDir": ".deep-mix/mcp-artifacts/playwright"
+      }
+    }
+  ]
+}

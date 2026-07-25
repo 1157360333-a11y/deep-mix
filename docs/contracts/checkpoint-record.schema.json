@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.dev/schemas/checkpoint-record.schema.json",
+  "title": "CheckpointRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checkpointId",
+    "sessionId",
+    "createdAt",
+    "scope",
+    "trackedFiles",
+    "gitRef",
+    "reason"
+  ],
+  "properties": {
+    "checkpointId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "pre_patch",
+        "post_patch",
+        "pre_tool_batch",
+        "manual_undo_anchor"
+      ]
+    },
+    "trackedFiles": {
+      "type": "array",
+      "description": "只覆盖被 runtime 跟踪的文件，不允许隐式回滚整个工作区。",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "gitRef": {
+      "type": "string",
+      "pattern": "^file-history/\\.git([#/:].+)?$",
+      "description": "只能引用内部 file-history/.git，不混用用户仓库 Git。"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

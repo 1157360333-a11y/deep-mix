@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.dev/schemas/supervisor-decision.schema.json",
+  "title": "SupervisorDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "reason",
+    "evidenceRefs"
+  ],
+  "$defs": {
+    "uriRef": {
+      "type": "string",
+      "pattern": "^(file|artifact)://.+"
+    },
+    "summaryRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refType",
+        "label",
+        "summary"
+      ],
+      "properties": {
+        "refType": {
+          "const": "summary"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      }
+    }
+  },
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "revise",
+        "retryWithMoreContext",
+        "fallbackToGovernor",
+        "continueVerification",
+        "abort"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/uriRef"
+      }
+    },
+    "extraContextRefs": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/uriRef"
+          },
+          {
+            "$ref": "#/$defs/summaryRef"
+          }
+        ]
+      }
+    },
+    "verificationCommands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "retryWithMoreContext"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "extraContextRefs"
+        ],
+        "properties": {
+          "extraContextRefs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "continueVerification"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "verificationCommands"
+        ],
+        "properties": {
+          "verificationCommands": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

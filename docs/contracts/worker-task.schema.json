@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.dev/schemas/worker-task.schema.json",
+  "title": "WorkerTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workerType",
+    "objective",
+    "constraints",
+    "contextRefs",
+    "expectedOutput",
+    "acceptanceChecks"
+  ],
+  "$defs": {
+    "uriRef": {
+      "type": "string",
+      "pattern": "^(file|artifact)://.+",
+      "description": "只允许文件或 artifact 引用。"
+    },
+    "summaryRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refType",
+        "label",
+        "summary"
+      ],
+      "properties": {
+        "refType": {
+          "const": "summary"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "只读摘要，不允许塞入大段正文。"
+        }
+      }
+    }
+  },
+  "properties": {
+    "workerType": {
+      "type": "string",
+      "enum": [
+        "coding",
+        "vision",
+        "review",
+        "research"
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "constraints": {
+      "type": "array",
+      "description": "有序数组，运行时必须按原顺序传递。",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "contextRefs": {
+      "type": "array",
+      "description": "只允许路径引用、artifact 引用、只读摘要。",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/uriRef"
+          },
+          {
+            "$ref": "#/$defs/summaryRef"
+          }
+        ]
+      }
+    },
+    "expectedOutput": {
+      "type": "string",
+      "description": "必须与 WorkerArtifact.kind 对齐。",
+      "enum": [
+        "code_artifact",
+        "vision_artifact",
+        "review_artifact",
+        "research_artifact"
+      ]
+    },
+    "acceptanceChecks": {
+      "type": "array",
+      "description": "监督层验证输入，不是 worker 自行裁决结果。",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

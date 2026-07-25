@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": false,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@deep-mix/shared-schema": ["../../packages/shared-schema/src/index.ts"],
+      "@deep-mix/core-governor": ["../../packages/core-governor/src/index.ts"],
+      "@deep-mix/persistence": ["../../packages/persistence/src/index.ts"],
+      "@shared/*": ["src/shared/*"],
+      "@renderer/*": ["src/renderer/*"]
+    }
+  },
+  "include": ["src/**/*", "../packages/shared-schema/src/**/*.ts", "../packages/core-governor/src/**/*.ts", "../packages/persistence/src/**/*.ts", "electron.vite.config.ts"]
+}

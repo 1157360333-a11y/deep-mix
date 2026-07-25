@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "defaults": {
+    "permissionMode": "auto"
+  },
+  "governor": {
+    "profile": "deepseek_governor",
+    "stream": true,
+    "thinkingMode": "adaptive",
+    "replyStyle": "pragmatic"
+  },
+  "codingWorker": {
+    "profile": "glm_coding_worker"
+  },
+  "visionWorker": {
+    "profile": "kimi_vision"
+  },
+  "git": {
+    "protectedBranches": [
+      "main",
+      "master"
+    ],
+    "worktreeRoots": [
+      ".deep-mix/worktrees"
+    ]
+  },
+  "codeIntelligence": {
+    "defaultSemanticProvider": "local"
+  },
+  "experimental": {
+    "managedProcesses": false
+  }
+}

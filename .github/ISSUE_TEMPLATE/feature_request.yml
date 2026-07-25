@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a focused improvement that preserves Deep-Mix trust boundaries.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete user or contributor problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe behavior, not only an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Best-fit boundary
+      options:
+        - Core runtime
+        - Built-in tool
+        - Skill
+        - Workflow
+        - MCP integration
+        - Worker
+        - CLI
+        - Desktop
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and compatibility impact
+      description: Explain new side effects, data leaving the workspace, migration needs, or why none apply.
+    validations:
+      required: true

@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.dev/schemas/worker-artifact.schema.json",
+  "title": "WorkerArtifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "summary",
+    "confidence",
+    "risks",
+    "metadata"
+  ],
+  "$defs": {
+    "artifactUri": {
+      "type": "string",
+      "pattern": "^artifact://[a-z0-9-]+/.+"
+    },
+    "stringList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0 },
+        "y": { "type": "number", "minimum": 0 },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "ocrBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "confidence"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "regionId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "visionRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "confidence", "bbox"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "bbox": { "$ref": "#/$defs/bbox" }
+      }
+    },
+    "visionComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "label", "confidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "regionId": { "type": "string", "minLength": 1 },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        }
+      }
+    },
+    "visionMetadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sourceType",
+        "inputMode",
+        "inputImageRef",
+        "originalImageRef",
+        "processedImageRef",
+        "mimeType",
+        "originalBytes",
+        "processedBytes",
+        "originalWidth",
+        "originalHeight",
+        "processedWidth",
+        "processedHeight",
+        "preprocessing"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": ["local_path", "uploaded_file", "browser_capture"]
+        },
+        "inputMode": {
+          "type": "string",
+          "enum": ["base64_data_url", "file_id"]
+        },
+        "inputImageRef": { "type": "string", "pattern": "^(file|artifact)://.+" },
+        "originalImageRef": { "$ref": "#/$defs/artifactUri" },
+        "processedImageRef": { "$ref": "#/$defs/artifactUri" },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "originalBytes": { "type": "number", "minimum": 0 },
+        "processedBytes": { "type": "number", "minimum": 0 },
+        "originalWidth": { "type": "number", "minimum": 0 },
+        "originalHeight": { "type": "number", "minimum": 0 },
+        "processedWidth": { "type": "number", "minimum": 0 },
+        "processedHeight": { "type": "number", "minimum": 0 },
+        "preprocessing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resized", "cropped", "recompressed"],
+          "properties": {
+            "resized": { "type": "boolean" },
+            "cropped": { "type": "boolean" },
+            "recompressed": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "common": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "code_artifact",
+            "vision_artifact",
+            "review_artifact",
+            "research_artifact"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "risks": {
+          "$ref": "#/$defs/stringList"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "properties": {
+    "kind": true,
+    "summary": true,
+    "confidence": true,
+    "risks": true,
+    "metadata": true,
+    "patchRef": {
+      "type": "string",
+      "pattern": "^artifact://patches/.+\\.patch$"
+    },
+    "changedFiles": {
+      "$ref": "#/$defs/stringList"
+    },
+    "testCommands": {
+      "$ref": "#/$defs/stringList"
+    },
+    "notes": {
+      "$ref": "#/$defs/stringList"
+    },
+    "taskType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ocrBlocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ocrBlock"
+      }
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/visionRegion"
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/visionComponent"
+      }
+    },
+    "issues": {
+      "$ref": "#/$defs/stringList"
+    },
+    "errorText": {
+      "$ref": "#/$defs/stringList"
+    },
+    "suspectedCauses": {
+      "$ref": "#/$defs/stringList"
+    },
+    "evidenceRegions": {
+      "$ref": "#/$defs/stringList"
+    },
+    "findings": {
+      "$ref": "#/$defs/stringList"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^(file|artifact)://.+"
+          },
+          {
+            "$ref": "#/$defs/artifactUri"
+          }
+        ]
+      }
+    },
+    "claims": {
+      "$ref": "#/$defs/stringList"
+    },
+    "sources": {
+      "$ref": "#/$defs/stringList"
+    },
+    "openQuestions": {
+      "$ref": "#/$defs/stringList"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "code_artifact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "patchRef",
+          "changedFiles",
+          "testCommands"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "vision_artifact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "taskType",
+          "issues",
+          "ocrBlocks",
+          "regions",
+          "components"
+        ],
+        "properties": {
+          "metadata": {
+            "$ref": "#/$defs/visionMetadata"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "vision_artifact"
+          },
+          "taskType": {
+            "const": "error_screenshot"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "errorText",
+          "suspectedCauses",
+          "evidenceRegions"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "review_artifact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "findings",
+          "severity",
+          "evidenceRefs"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "research_artifact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "claims",
+          "sources",
+          "openQuestions"
+        ]
+      }
+    }
+  ],
+  "description": "超大内容一律外置到 artifact store，协议内只保留引用。"
+}

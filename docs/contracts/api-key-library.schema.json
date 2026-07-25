@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.local/contracts/api-key-library.schema.json",
+  "title": "Deep-Mix API Key Library",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "profiles"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      }
+    }
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "role",
+        "baseUrl",
+        "chatPath",
+        "model",
+        "headers",
+        "requestDefaults"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["deepseek", "glm", "kimi"]
+        },
+        "role": {
+          "type": "string",
+          "enum": ["governor", "coding_worker", "vision_worker"]
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "apiKeyEnvName": {
+          "type": "string"
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chatPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supportsMultimodalInput": {
+          "type": "boolean"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "requestDefaults": {
+          "type": "object"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

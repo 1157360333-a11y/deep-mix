@@ -1,0 +1,70 @@
+{
+  "providerError": "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'",
+  "failureChain": [
+    "assistant message with tool_calls",
+    "multiple tool messages",
+    "long tool output forces history truncation",
+    "continuing the same failed session reuses broken history"
+  ],
+  "messages": [
+    {
+      "recordType": "message",
+      "messageId": "msg-user-1",
+      "sessionId": "baseline-session",
+      "turnId": "turn-1",
+      "role": "user",
+      "createdAt": "2026-07-09T00:00:00.000Z",
+      "content": "Explain the current repository purpose."
+    },
+    {
+      "recordType": "message",
+      "messageId": "msg-assistant-1",
+      "sessionId": "baseline-session",
+      "turnId": "turn-1",
+      "role": "assistant",
+      "createdAt": "2026-07-09T00:00:01.000Z",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "call-list",
+          "name": "list_files",
+          "arguments": {
+            "cwd": ".",
+            "maxResults": 200
+          },
+          "rawArguments": "{\"cwd\":\".\",\"maxResults\":200}"
+        },
+        {
+          "id": "call-read",
+          "name": "read_file",
+          "arguments": {
+            "path": "src/huge-file.ts"
+          },
+          "rawArguments": "{\"path\":\"src/huge-file.ts\"}"
+        }
+      ]
+    },
+    {
+      "recordType": "message",
+      "messageId": "msg-tool-1",
+      "sessionId": "baseline-session",
+      "turnId": "turn-1",
+      "role": "tool",
+      "createdAt": "2026-07-09T00:00:02.000Z",
+      "content": "src/a.ts\nsrc/b.ts\nsrc/c.ts\nsrc/d.ts\nsrc/e.ts\nsrc/f.ts\nsrc/g.ts\nsrc/h.ts\nsrc/i.ts\nsrc/j.ts\nsrc/k.ts\nsrc/l.ts\nsrc/m.ts\nsrc/n.ts\nsrc/o.ts\nsrc/p.ts\nsrc/q.ts\nsrc/r.ts\nsrc/s.ts\nsrc/t.ts\nsrc/u.ts\nsrc/v.ts\nsrc/w.ts\nsrc/x.ts\nsrc/y.ts\nsrc/z.ts\nsrc/a.ts\nsrc/b.ts\nsrc/c.ts\nsrc/d.ts\nsrc/e.ts\nsrc/f.ts\nsrc/g.ts\nsrc/h.ts\nsrc/i.ts\nsrc/j.ts\nsrc/k.ts\nsrc/l.ts\nsrc/m.ts\nsrc/n.ts\nsrc/o.ts\nsrc/p.ts\nsrc/q.ts\nsrc/r.ts\nsrc/s.ts\nsrc/t.ts\nsrc/u.ts\nsrc/v.ts\nsrc/w.ts\nsrc/x.ts\nsrc/y.ts\nsrc/z.ts\nsrc/a.ts\nsrc/b.ts\nsrc/c.ts\nsrc/d.ts\nsrc/e.ts\nsrc/f.ts\nsrc/g.ts\nsrc/h.ts\nsrc/i.ts\nsrc/j.ts\nsrc/k.ts\nsrc/l.ts\nsrc/m.ts\nsrc/n.ts\nsrc/o.ts\nsrc/p.ts\nsrc/q.ts\nsrc/r.ts\nsrc/s.ts\nsrc/t.ts\nsrc/u.ts\nsrc/v.ts\nsrc/w.ts\nsrc/x.ts\nsrc/y.ts\nsrc/z.ts",
+      "name": "list_files",
+      "toolCallId": "call-list"
+    },
+    {
+      "recordType": "message",
+      "messageId": "msg-tool-2",
+      "sessionId": "baseline-session",
+      "turnId": "turn-1",
+      "role": "tool",
+      "createdAt": "2026-07-09T00:00:03.000Z",
+      "content": "export const hugeText = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\";",
+      "name": "read_file",
+      "toolCallId": "call-read"
+    }
+  ]
+}

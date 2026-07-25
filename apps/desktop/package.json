@@ -1,0 +1,31 @@
+{
+  "name": "@deep-mix/desktop",
+  "private": true,
+  "version": "1.0.0",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "verify:web-search-network": "electron verify-web-search-network.cjs",
+    "verify:pdf-production": "npm run build && node verify-pdf-production-bundle.mjs",
+    "verify:phase20-production": "npm run build && node verify-phase20-production-bundle.mjs",
+    "preview": "electron-vite preview",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.2.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.3.6"
+  }
+}

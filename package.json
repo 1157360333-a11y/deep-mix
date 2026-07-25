@@ -1,0 +1,93 @@
+{
+  "name": "deep-mix",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local-first multi-model coding-agent runtime with one governor, isolated specialist workers, and permissioned tool execution.",
+  "license": "Apache-2.0",
+  "author": "QCY",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1157360333-a11y/deep-mix.git"
+  },
+  "bugs": {
+    "url": "https://github.com/1157360333-a11y/deep-mix/issues"
+  },
+  "homepage": "https://github.com/1157360333-a11y/deep-mix#readme",
+  "keywords": [
+    "agent-runtime",
+    "coding-agent",
+    "deepseek",
+    "electron",
+    "glm",
+    "kimi",
+    "mcp",
+    "multi-model",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
+  "packageManager": "npm@11.6.2",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:desktop",
+    "check:desktop": "cd apps/desktop && npm run check",
+    "cli": "tsx apps/cli/src/main.ts",
+    "app": "npm run desktop:dev",
+    "desktop:dev": "cd apps/desktop && npm run dev",
+    "desktop:build": "cd apps/desktop && npm run build",
+    "desktop:preview": "cd apps/desktop && npm run preview",
+    "eval:phase7": "tsx apps/cli/src/phase7-eval.ts",
+    "probe:model": "tsx apps/cli/src/model-profile-probe.ts",
+    "create:tool": "tsx scripts/create-tool.ts",
+    "verify:public": "tsx scripts/verify-public-release.ts",
+    "test": "npm run test:fast",
+    "test:fast": "vitest run tests/api-key-library-resolution.unit.test.ts tests/cli-args.unit.test.ts tests/deepseek-client.unit.test.ts tests/desktop-chat-ux.unit.test.ts tests/desktop-display-history.unit.test.ts tests/desktop-preferences.unit.test.ts tests/desktop-project-state.unit.test.ts tests/desktop-tool-turns.unit.test.ts tests/settings-loader.unit.test.ts tests/tool-network-service.unit.test.ts tests/phase1.integration.test.ts tests/phase6.integration.test.ts tests/runtime-reliability.regression.test.ts apps/desktop/src/main/document-attachment-import.test.ts apps/desktop/src/main/network-service.test.ts --maxWorkers=1 --fileParallelism=false",
+    "test:integration": "vitest run --exclude tests/phase17.integration.test.ts --exclude tests/phase18.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "test:platform": "vitest run tests/phase17.integration.test.ts tests/phase18.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "test:full": "vitest run --maxWorkers=1 --fileParallelism=false",
+    "verify:release": "npm run verify:public && npm run check && npm run test:fast && npm run desktop:build",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "verify:phase1": "vitest run tests/phase1.integration.test.ts",
+    "verify:phase2": "vitest run tests/phase2.integration.test.ts",
+    "verify:phase3": "vitest run tests/phase3.integration.test.ts",
+    "verify:phase4": "vitest run tests/phase4.integration.test.ts",
+    "verify:phase5": "vitest run tests/phase5.integration.test.ts",
+    "verify:phase6": "vitest run tests/phase6.integration.test.ts",
+    "verify:phase7": "vitest run tests/phase7.integration.test.ts",
+    "verify:phase10": "vitest run tests/phase10.integration.test.ts",
+    "verify:phase11": "vitest run tests/phase11.integration.test.ts",
+    "verify:phase12": "vitest run tests/phase12.integration.test.ts",
+    "verify:phase13": "vitest run tests/phase13.integration.test.ts",
+    "verify:phase15": "vitest run tests/phase15.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase16": "vitest run tests/phase16.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase17": "vitest run tests/phase17.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase18": "vitest run tests/phase18.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase19": "vitest run tests/phase19.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase20": "vitest run tests/phase20.integration.test.ts tests/phase20.spreadsheet-read.test.ts tests/phase20.spreadsheet-write.test.ts tests/phase20.presentation.test.ts tests/phase20.notebook.test.ts tests/phase20.image.test.ts tests/phase20.archive.test.ts tests/phase20.conversion.test.ts tests/phase20.selection.test.ts apps/desktop/src/main/document-attachment-import.test.ts tests/desktop-display-history.unit.test.ts --maxWorkers=1 --fileParallelism=false && npm --prefix apps/desktop run verify:phase20-production",
+    "verify:phase21": "vitest run tests/phase21.integration.test.ts tests/phase21.security.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase14": "vitest run tests/phase14.baseline.test.ts tests/phase14.integration.test.ts tests/phase14.document-selection.test.ts tests/phase14.read-pdf.test.ts tests/phase14.read-docx.test.ts tests/phase14.write-pdf.test.ts tests/phase14.write-docx.test.ts tests/web-search.integration.test.ts tests/tool-network-service.unit.test.ts tests/runtime-reliability.regression.test.ts tests/phase12.integration.test.ts tests/desktop-display-history.unit.test.ts apps/desktop/src/main/document-attachment-import.test.ts apps/desktop/src/main/network-service.test.ts --maxWorkers=1 --fileParallelism=false && npm --prefix apps/desktop run verify:pdf-production"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/yauzl": "^3.4.0",
+    "exceljs": "npm:@mui/x-internal-exceljs-fork@5.0.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "fast-uri": "3.1.4",
+    "http-proxy-agent": "^9.1.0",
+    "proxy-agent": "^8.0.2",
+    "sharp": "^0.35.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
+  }
+}

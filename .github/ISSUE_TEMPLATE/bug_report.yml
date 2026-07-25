@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible Deep-Mix defect without sharing secrets or private code.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, private repository content, session JSONL, or unredacted worker artifacts. Security vulnerabilities belong in the private Security reporting flow.
+  - type: input
+    id: version
+    attributes:
+      label: Deep-Mix version or commit
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Node 22.x, npm 11.x, PowerShell
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - CLI / TUI
+        - Desktop
+        - Governor / routing
+        - Worker
+        - Tool Runtime / permissions
+        - Skills / Workflows / MCP
+        - Build / tests
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction
+      description: Use a public or synthetic fixture and include the exact command.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted error
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I removed credentials, private code, personal paths, and sensitive `.deep-mix` state.
+          required: true
+        - label: I checked existing issues and the troubleshooting guide.
+          required: true

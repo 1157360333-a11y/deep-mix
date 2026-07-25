@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep-mix.dev/schemas/route-profile.schema.json",
+  "title": "RouteProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "model",
+    "role",
+    "contextWindow",
+    "toolCallingMode",
+    "thinkingMode",
+    "pricing",
+    "maxInputSize"
+  ],
+  "$defs": {
+    "pricingEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "price": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "properties": {
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "governor",
+        "coding_worker",
+        "vision_worker"
+      ]
+    },
+    "contextWindow": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "toolCallingMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "runtime_mediated",
+        "provider_native"
+      ]
+    },
+    "thinkingMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "reasoningEffort"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "enabled",
+            "adaptive"
+          ]
+        },
+        "reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/pricingEntry"
+        },
+        "output": {
+          "$ref": "#/$defs/pricingEntry"
+        },
+        "cacheRead": {
+          "$ref": "#/$defs/pricingEntry"
+        },
+        "cacheWrite": {
+          "$ref": "#/$defs/pricingEntry"
+        }
+      }
+    },
+    "maxInputSize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "unit"
+      ],
+      "properties": {
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "characters",
+            "bytes"
+          ]
+        }
+      }
+    }
+  }
+}

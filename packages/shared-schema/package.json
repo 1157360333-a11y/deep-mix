@@ -1,0 +1,6 @@
+{
+  "name": "@deep-mix/shared-schema",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module"
+}

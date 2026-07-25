@@ -1,0 +1,47 @@
+# Dependencies and build outputs
+node_modules/
+coverage/
+dist/
+out/
+output/
+apps/desktop/out/
+*.tsbuildinfo
+
+# Local Deep-Mix runtime state. Only the public boundary files below are tracked.
+.deep-mix/*
+!.deep-mix/mcp/
+!.deep-mix/skills/
+!.deep-mix/workflows/
+.deep-mix/mcp/*
+!.deep-mix/mcp/README.md
+!.deep-mix/mcp/servers.json
+.deep-mix/skills/*
+!.deep-mix/skills/README.md
+.deep-mix/workflows/*
+!.deep-mix/workflows/README.md
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.local.json
+credentials*.json
+secrets*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs, temporary files, and browser automation state
+*.log
+*.tmp
+tmp/
+.tmp/
+.playwright-mcp/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
