@@ -15,7 +15,7 @@ npm run cli -- [prompt] [options]
 | `--prompt <text>` | Submit an initial task after startup |
 | `--workspace <path>` | Select the target workspace; defaults to the current directory |
 | `--mode <mode>` | `plan`, `edit`, `auto`, or `danger-full-access` |
-| `--route <route>` | `ds_direct`, `glm_coding`, or `kimi_vision` |
+| `--route <route>` | `governor_direct`, `coding_worker`, or `vision_worker` (legacy values remain readable) |
 | `--resume [id]` | Resume a specific or latest resumable session |
 | `--list-skills` | Print discovered Skills as JSON |
 | `--skill-query <text>` | Filter `--list-skills` |
@@ -27,7 +27,7 @@ Examples:
 ```powershell
 npm run cli -- --workspace C:\work\project --mode plan
 npm run cli -- --workspace C:\work\project --mode auto --prompt "Find the failing test"
-npm run cli -- --workspace C:\work\project --route glm_coding --mode auto --prompt "Refactor the parser"
+npm run cli -- --workspace C:\work\project --route coding_worker --mode auto --prompt "Refactor the parser"
 npm run cli -- --workspace C:\work\project --resume
 ```
 
@@ -67,9 +67,9 @@ Mode names are permission-policy inputs, not OS sandboxes. Always inspect comman
 
 ## Routing
 
-Automatic routing keeps governance with DeepSeek. Coding or vision work may be delegated to a specialist, but the worker's artifact returns to DeepSeek for review. `--route` is primarily a validation and debugging override; it does not grant the worker direct workspace access.
+Automatic routing keeps governance with the configured `governor` slot. Coding or vision work may be delegated to a specialist, but the worker's artifact returns to the governor for review. `--route` is primarily a validation and debugging override; it does not grant the worker direct workspace access.
 
-Use `ds_direct` when validating the governor alone. Use `glm_coding` or `kimi_vision` only after the matching profile probe succeeds.
+Use `governor_direct` when validating the governor alone. Use `coding_worker` or `vision_worker` only after the selected slot profile probe and capability gate succeed.
 
 ## Approvals
 
@@ -79,7 +79,7 @@ If a turn is waiting for approval, answer the approval rather than sending an un
 
 ## Sessions and exports
 
-Session data is stored under the target workspace's `.deep-mix/` directory. `/resume` uses that workspace, so launching with the wrong `--workspace` will not find the intended session.
+Session data is stored under `~/.deep-mix/workspaces/<workspace-id>/` by default. `/resume` still resolves by workspace identity, so launching with the wrong `--workspace` will not find the intended session.
 
 Exports are local convenience artifacts, not automatically redacted reports. Check for private paths, code, user prompts, tool output, and provider content before sharing.
 

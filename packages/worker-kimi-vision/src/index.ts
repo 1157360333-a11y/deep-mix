@@ -1,4 +1,5 @@
-import type { KimiVisionWorkerConfig } from "../../route-resolver/src/index.js";
+import type { VisionWorkerModelConfig } from "../../route-resolver/src/index.js";
+import { createDefaultModelAdapterRegistry, ModelAdapterError, type ModelAdapterRegistry, type ResolvedModelProfile } from "../../model-adapters/src/index.js";
 import type {
   VisionArtifact,
   VisionArtifactMetadata,
@@ -43,12 +44,12 @@ export interface VisionArtifactDraft {
   evidenceRegions?: string[];
 }
 
-export interface KimiVisionWorkerExecutionResult {
+export interface VisionWorkerExecutionResult {
   artifact: VisionArtifactDraft;
   rawResponse: string;
 }
 
-export interface KimiVisionWorkerRequest {
+export interface VisionWorkerRequest {
   task: WorkerTask;
   preparedInput: PreparedVisionInput;
   workerSessionId: string;
@@ -56,7 +57,7 @@ export interface KimiVisionWorkerRequest {
 }
 
 export interface VisionWorkerRunner {
-  runTask: (input: KimiVisionWorkerRequest) => Promise<KimiVisionWorkerExecutionResult>;
+  runTask: (input: VisionWorkerRequest) => Promise<VisionWorkerExecutionResult>;
 }
 
 export interface VisionWorkerToolInput {
@@ -67,7 +68,7 @@ export interface VisionWorkerToolInput {
   constraints?: string[];
 }
 
-export class KimiVisionWorkerError extends Error {
+export class VisionWorkerError extends Error {
   public readonly type: WorkerFailureType;
 
   public readonly retryable: boolean;
@@ -76,7 +77,7 @@ export class KimiVisionWorkerError extends Error {
 
   public constructor(type: WorkerFailureType, message: string, options?: { retryable?: boolean; rawResponse?: string }) {
     super(message);
-    this.name = "KimiVisionWorkerError";
+    this.name = "VisionWorkerError";
     this.type = type;
     this.retryable = options?.retryable ?? false;
     this.rawResponse = options?.rawResponse;
@@ -89,7 +90,7 @@ function isNonEmptyString(value: unknown): value is string {
 
 function asStringArray(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value) || value.some((entry) => !isNonEmptyString(entry))) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `Invalid ${fieldName} in vision artifact.`, {
+    throw new VisionWorkerError("artifact_validation_failed", `Invalid ${fieldName} in vision artifact.`, {
       retryable: false,
     });
   }
@@ -98,7 +99,7 @@ function asStringArray(value: unknown, fieldName: string): string[] {
 
 function asConfidence(value: unknown, fieldName: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `${fieldName} must be a number between 0 and 1.`, {
+    throw new VisionWorkerError("artifact_validation_failed", `${fieldName} must be a number between 0 and 1.`, {
       retryable: false,
     });
   }
@@ -107,7 +108,7 @@ function asConfidence(value: unknown, fieldName: string): number {
 
 function asBBox(value: unknown, fieldName: string): VisionRegion["bbox"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `${fieldName} must be an object.`, {
+    throw new VisionWorkerError("artifact_validation_failed", `${fieldName} must be an object.`, {
       retryable: false,
     });
   }
@@ -118,7 +119,7 @@ function asBBox(value: unknown, fieldName: string): VisionRegion["bbox"] {
   const width = Number(record.width);
   const height = Number(record.height);
   if ([x, y, width, height].some((entry) => !Number.isFinite(entry) || entry < 0)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `${fieldName} must contain non-negative x/y/width/height.`, {
+    throw new VisionWorkerError("artifact_validation_failed", `${fieldName} must contain non-negative x/y/width/height.`, {
       retryable: false,
     });
   }
@@ -127,20 +128,20 @@ function asBBox(value: unknown, fieldName: string): VisionRegion["bbox"] {
 
 function asOcrBlocks(value: unknown): VisionOcrBlock[] {
   if (!Array.isArray(value)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "ocrBlocks must be an array.", {
+    throw new VisionWorkerError("artifact_validation_failed", "ocrBlocks must be an array.", {
       retryable: false,
     });
   }
 
   return value.map((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `ocrBlocks[${index}] must be an object.`, {
+      throw new VisionWorkerError("artifact_validation_failed", `ocrBlocks[${index}] must be an object.`, {
         retryable: false,
       });
     }
     const record = entry as Record<string, unknown>;
     if (!isNonEmptyString(record.text)) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `ocrBlocks[${index}].text must be non-empty.`, {
+      throw new VisionWorkerError("artifact_validation_failed", `ocrBlocks[${index}].text must be non-empty.`, {
         retryable: false,
       });
     }
@@ -154,20 +155,20 @@ function asOcrBlocks(value: unknown): VisionOcrBlock[] {
 
 function asRegions(value: unknown): VisionRegion[] {
   if (!Array.isArray(value)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "regions must be an array.", {
+    throw new VisionWorkerError("artifact_validation_failed", "regions must be an array.", {
       retryable: false,
     });
   }
 
   return value.map((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `regions[${index}] must be an object.`, {
+      throw new VisionWorkerError("artifact_validation_failed", `regions[${index}] must be an object.`, {
         retryable: false,
       });
     }
     const record = entry as Record<string, unknown>;
     if (!isNonEmptyString(record.id) || !isNonEmptyString(record.label)) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `regions[${index}] must include non-empty id and label.`, {
+      throw new VisionWorkerError("artifact_validation_failed", `regions[${index}] must include non-empty id and label.`, {
         retryable: false,
       });
     }
@@ -182,20 +183,20 @@ function asRegions(value: unknown): VisionRegion[] {
 
 function asComponents(value: unknown): VisionComponent[] {
   if (!Array.isArray(value)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "components must be an array.", {
+    throw new VisionWorkerError("artifact_validation_failed", "components must be an array.", {
       retryable: false,
     });
   }
 
   return value.map((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `components[${index}] must be an object.`, {
+      throw new VisionWorkerError("artifact_validation_failed", `components[${index}] must be an object.`, {
         retryable: false,
       });
     }
     const record = entry as Record<string, unknown>;
     if (!isNonEmptyString(record.id) || !isNonEmptyString(record.type) || !isNonEmptyString(record.label)) {
-      throw new KimiVisionWorkerError(
+      throw new VisionWorkerError(
         "artifact_validation_failed",
         `components[${index}] must include non-empty id, type, and label.`,
         { retryable: false },
@@ -358,10 +359,10 @@ export function buildVisionArtifact(
 
 export function validateVisionArtifact(artifact: VisionArtifact): VisionArtifact {
   if (artifact.kind !== "vision_artifact") {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `Expected vision_artifact, received ${artifact.kind}.`);
+    throw new VisionWorkerError("artifact_validation_failed", `Expected vision_artifact, received ${artifact.kind}.`);
   }
   if (!isNonEmptyString(artifact.summary)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "Vision artifact summary must be non-empty.");
+    throw new VisionWorkerError("artifact_validation_failed", "Vision artifact summary must be non-empty.");
   }
   if (
     artifact.taskType !== "ocr_extract" &&
@@ -369,14 +370,14 @@ export function validateVisionArtifact(artifact: VisionArtifact): VisionArtifact
     artifact.taskType !== "error_screenshot" &&
     artifact.taskType !== "diagram_parse"
   ) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", `Unsupported taskType ${artifact.taskType}.`);
+    throw new VisionWorkerError("artifact_validation_failed", `Unsupported taskType ${artifact.taskType}.`);
   }
   artifact.confidence = asConfidence(artifact.confidence, "confidence");
   artifact.issues = asStringArray(artifact.issues, "issues");
   artifact.risks = Array.isArray(artifact.risks) ? asStringArray(artifact.risks, "risks") : [...artifact.issues];
 
   if (!artifact.metadata || typeof artifact.metadata !== "object" || Array.isArray(artifact.metadata)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "Vision artifact metadata must be an object.");
+    throw new VisionWorkerError("artifact_validation_failed", "Vision artifact metadata must be an object.");
   }
 
   const metadata = artifact.metadata as VisionArtifactMetadata;
@@ -385,14 +386,14 @@ export function validateVisionArtifact(artifact: VisionArtifact): VisionArtifact
     metadata.sourceType !== "uploaded_file" &&
     metadata.sourceType !== "browser_capture"
   ) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "metadata.sourceType is invalid.");
+    throw new VisionWorkerError("artifact_validation_failed", "metadata.sourceType is invalid.");
   }
   if (metadata.inputMode !== "base64_data_url" && metadata.inputMode !== "file_id") {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "metadata.inputMode is invalid.");
+    throw new VisionWorkerError("artifact_validation_failed", "metadata.inputMode is invalid.");
   }
   for (const field of ["inputImageRef", "originalImageRef", "processedImageRef", "mimeType"] as const) {
     if (!isNonEmptyString(metadata[field])) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `metadata.${field} must be non-empty.`);
+      throw new VisionWorkerError("artifact_validation_failed", `metadata.${field} must be non-empty.`);
     }
   }
   for (const field of [
@@ -405,11 +406,11 @@ export function validateVisionArtifact(artifact: VisionArtifact): VisionArtifact
   ] as const) {
     const value = Number(metadata[field]);
     if (!Number.isFinite(value) || value < 0) {
-      throw new KimiVisionWorkerError("artifact_validation_failed", `metadata.${field} must be non-negative.`);
+      throw new VisionWorkerError("artifact_validation_failed", `metadata.${field} must be non-negative.`);
     }
   }
   if (!metadata.preprocessing || typeof metadata.preprocessing !== "object" || Array.isArray(metadata.preprocessing)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "metadata.preprocessing must be an object.");
+    throw new VisionWorkerError("artifact_validation_failed", "metadata.preprocessing must be an object.");
   }
 
   artifact.ocrBlocks = asOcrBlocks(artifact.ocrBlocks);
@@ -455,7 +456,7 @@ export function toVisionToolSummary(artifact: VisionArtifact, artifactRef: strin
 
 function buildSystemPrompt(taskType: VisionTaskType): string {
   return [
-    "You are the isolated Kimi vision worker inside Deep-Mix phase 4.",
+    "You are the isolated Vision Worker inside Deep-Mix.",
     "You are not the governor.",
     "You do not have workspace write access or tool access.",
     "Return a single JSON object only. Do not wrap it in markdown fences.",
@@ -527,7 +528,7 @@ function parseJsonObject(raw: string): Record<string, unknown> {
     }
     return parsed as Record<string, unknown>;
   } catch (error) {
-    throw new KimiVisionWorkerError("response_parse_failed", `Failed to parse Kimi JSON response: ${(error as Error).message}`, {
+    throw new VisionWorkerError("response_parse_failed", `Failed to parse vision JSON response: ${(error as Error).message}`, {
       retryable: true,
       rawResponse: raw,
     });
@@ -537,7 +538,7 @@ function parseJsonObject(raw: string): Record<string, unknown> {
 function parseVisionArtifactDraft(raw: string): VisionArtifactDraft {
   const parsed = parseJsonObject(raw);
   if (!isNonEmptyString(parsed.summary)) {
-    throw new KimiVisionWorkerError("artifact_validation_failed", "Vision artifact summary must be non-empty.", {
+    throw new VisionWorkerError("artifact_validation_failed", "Vision artifact summary must be non-empty.", {
       retryable: false,
       rawResponse: raw,
     });
@@ -558,72 +559,70 @@ function parseVisionArtifactDraft(raw: string): VisionArtifactDraft {
   };
 }
 
-export class KimiVisionWorkerClient implements VisionWorkerRunner {
-  private readonly config: KimiVisionWorkerConfig;
+export class VisionWorkerClient implements VisionWorkerRunner {
+  private readonly config: VisionWorkerModelConfig;
 
-  public constructor(config: KimiVisionWorkerConfig) {
+  public constructor(config: VisionWorkerModelConfig, private readonly registry: ModelAdapterRegistry = createDefaultModelAdapterRegistry()) {
     this.config = config;
   }
 
-  public async runTask(input: KimiVisionWorkerRequest): Promise<KimiVisionWorkerExecutionResult> {
+  public async runTask(input: VisionWorkerRequest): Promise<VisionWorkerExecutionResult> {
     if (!this.config.apiKey) {
-      throw new KimiVisionWorkerError("configuration_error", "Missing API key for kimi_vision profile.");
+      throw new VisionWorkerError("configuration_error", `Missing credential for vision profile ${this.config.profileId ?? "unknown"}.`);
     }
     if (!this.config.supportsMultimodalInput) {
-      throw new KimiVisionWorkerError("configuration_error", "The configured Kimi profile does not support multimodal input.");
+      throw new VisionWorkerError("configuration_error", `capability_unavailable: profile=${this.config.profileId ?? "unknown"}; missing=imageInput.`);
     }
-
-    const response = await fetch(`${this.config.baseUrl}${this.config.endpointPath}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        "Content-Type": "application/json",
-        ...this.config.headers,
+    const profile: ResolvedModelProfile = {
+      profileId: this.config.profileId ?? "classic_vision",
+      provider: this.config.provider ?? "legacy-vision",
+      protocol: this.config.protocol ?? "openai_chat_completions",
+      adapterId: this.config.adapterId ?? "openai_compatible",
+      baseUrl: this.config.baseUrl,
+      endpointPath: this.config.endpointPath,
+      model: this.config.model,
+      capabilities: this.config.capabilities ?? {
+        textInput: true,
+        imageInput: this.config.supportsMultimodalInput,
+        streaming: false,
+        nativeToolCalling: false,
+        structuredOutput: true,
+        reasoning: false,
+        contextWindow: this.config.contextWindow,
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: [
-          {
-            role: "system",
-            content: buildSystemPrompt(input.preparedInput.taskType),
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: {
-                  url: input.preparedInput.processedDataUrl,
-                },
-              },
-              {
-                type: "text",
-                text: buildUserPrompt(input.task, input.preparedInput),
-              },
-            ],
-          },
-        ],
-        response_format: { type: this.config.responseFormat },
-        thinking: { type: "disabled" },
-        ...this.config.requestDefaults,
-      }),
-      signal: input.signal,
-    });
-
-    if (!response.ok) {
-      throw new KimiVisionWorkerError(
-        "model_call_failed",
-        `Kimi request failed with ${response.status}: ${(await response.text()).slice(0, 400)}`,
-        { retryable: response.status >= 500 },
-      );
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
+      allowedSlots: ["vision"],
+      apiKey: this.config.apiKey,
+      headers: this.config.headers,
+      requestDefaults: this.config.requestDefaults,
     };
-    const rawResponse = payload.choices?.[0]?.message?.content?.trim();
+    let rawResponse: string;
+    try {
+      const response = await this.registry.resolve(profile.adapterId).completeVision(profile, {
+        messages: [{ role: "system", content: buildSystemPrompt(input.preparedInput.taskType) }],
+        image: {
+          mode: input.preparedInput.inputMode,
+          value: input.preparedInput.processedDataUrl,
+          mimeType: input.preparedInput.mimeType,
+        },
+        text: buildUserPrompt(input.task, input.preparedInput),
+        responseFormat: this.config.responseFormat,
+        extraBody: { thinking: { type: "disabled" } },
+        signal: input.signal,
+      });
+      rawResponse = response.content.trim();
+    } catch (error) {
+      if (error instanceof ModelAdapterError) {
+        const type: WorkerFailureType = error.failureType === "configuration" || error.failureType === "capability"
+          ? "configuration_error"
+          : error.failureType === "timeout"
+            ? "call_timeout"
+            : "model_call_failed";
+        throw new VisionWorkerError(type, `Vision model call failed; profile=${error.profileId ?? profile.profileId}; adapter=${error.adapterId}; retryable=${error.retryable}; reason=${error.message}`, { retryable: error.retryable });
+      }
+      throw error;
+    }
     if (!rawResponse) {
-      throw new KimiVisionWorkerError("response_parse_failed", "Kimi response did not contain assistant content.", {
+      throw new VisionWorkerError("response_parse_failed", "Vision response did not contain assistant content.", {
         retryable: true,
       });
     }
@@ -634,3 +633,50 @@ export class KimiVisionWorkerClient implements VisionWorkerRunner {
     };
   }
 }
+
+export class FallbackVisionWorkerRunner implements VisionWorkerRunner {
+  public selectedIndex = 0;
+  public readonly attempts: Array<{ fallbackIndex: number; profileId: string; outcome: "failed" | "selected"; failureType?: string }> = [];
+
+  public constructor(
+    private readonly candidates: Array<{ config: VisionWorkerModelConfig; runner: VisionWorkerRunner }>,
+    private readonly allowedTriggers: ReadonlySet<import("../../shared-schema/src/index.js").ModelFallbackTrigger>,
+  ) {
+    if (candidates.length === 0) throw new Error("FallbackVisionWorkerRunner requires candidates.");
+  }
+
+  public async runTask(input: VisionWorkerRequest): Promise<VisionWorkerExecutionResult> {
+    for (let index = 0; index < this.candidates.length; index += 1) {
+      try {
+        const result = await this.candidates[index]!.runner.runTask(input);
+        this.selectedIndex = index;
+        this.attempts.push({ fallbackIndex: index, profileId: this.candidates[index]!.config.profileId ?? "unknown", outcome: "selected" });
+        return result;
+      } catch (error) {
+        const trigger = error instanceof VisionWorkerError
+          ? error.type === "configuration_error"
+            ? "configuration"
+            : error.type === "call_timeout"
+              ? "timeout"
+              : error.type === "model_call_failed"
+                ? "provider_error"
+                : error.type === "response_parse_failed" || error.type === "artifact_validation_failed"
+                  ? "invalid_response"
+                  : undefined
+          : undefined;
+        this.attempts.push({ fallbackIndex: index, profileId: this.candidates[index]!.config.profileId ?? "unknown", outcome: "failed", failureType: trigger });
+        if (!trigger || index + 1 >= this.candidates.length || !this.allowedTriggers.has(trigger) || input.signal?.aborted) throw error;
+      }
+    }
+    throw new Error("No vision model candidate completed the task.");
+  }
+}
+
+/** @deprecated Classic compatibility exports. */
+export type KimiVisionWorkerExecutionResult = VisionWorkerExecutionResult;
+/** @deprecated Classic compatibility exports. */
+export type KimiVisionWorkerRequest = VisionWorkerRequest;
+/** @deprecated Classic compatibility exports. */
+export const KimiVisionWorkerError = VisionWorkerError;
+/** @deprecated Classic compatibility exports. */
+export const KimiVisionWorkerClient = VisionWorkerClient;

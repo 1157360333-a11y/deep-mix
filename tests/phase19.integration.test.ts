@@ -1295,11 +1295,9 @@ describe("phase 19 dependency audit", () => {
 });
 
 describe("phase 19 security scan", () => {
-  const syntheticToken = ["github", "pat", "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"].join("_");
-
   async function createSecurityWorkspace(): Promise<{ workspaceRoot: string; source: string }> {
     const workspaceRoot = await createWorkspace("deep-mix-phase19-security-");
-    const source = `export const token = '${syntheticToken}';\n`;
+    const source = "export const token = 'github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456';\n";
     await writeFile(workspaceRoot, "src/secret.ts", source);
     await writeFile(workspaceRoot, "rules/security.yml", "rules: []\n");
     return { workspaceRoot, source };
@@ -1361,7 +1359,7 @@ describe("phase 19 security scan", () => {
 
   it("deduplicates and normalizes findings while redacting the required artifact and applying no patch", async () => {
     const { workspaceRoot, source } = await createSecurityWorkspace();
-    const interpolatedSecret = syntheticToken;
+    const interpolatedSecret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
     const rawFinding = {
       check_id: "security.hardcoded-secret-token",
       path: "src/secret.ts",

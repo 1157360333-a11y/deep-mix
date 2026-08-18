@@ -816,7 +816,7 @@ async function executeWebFetch(args: WebFetchArgs, context: RuntimeToolExecution
       url: args.url,
       headers: {
         Accept: "text/html, text/markdown, text/plain, application/json;q=0.9, */*;q=0.2",
-        "User-Agent": "Deep-Mix/1.0 web_fetch",
+        "User-Agent": "Deep-Mix/0.1 web_fetch",
       },
       timeoutMs,
       maxResponseBytes: MAX_FETCH_BYTES,

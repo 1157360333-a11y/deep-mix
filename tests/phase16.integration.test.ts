@@ -187,7 +187,7 @@ async function createToolFixture(input: {
   const sessionStore = new SessionStore(workspaceRoot);
   await sessionStore.ensureInitialized();
   if (input.networkDisabled) {
-    await fs.writeFile(path.join(workspaceRoot, ".deep-mix", "permission-policy.json"), JSON.stringify({
+    await fs.writeFile(path.join(sessionStore.paths.stateDir, "permission-policy.json"), JSON.stringify({
       version: 1,
       workspaceWriteRoots: ["."],
       shellAllowedCwds: ["."],
@@ -1343,7 +1343,7 @@ describe("phase 16 guarded downloads", () => {
       expect(JSON.stringify(result)).not.toContain("artifact://");
     }
     expect(await fixture.sessionStore.listToolOutputArtifacts(fixture.sessionId)).toEqual([]);
-    expect(await listRegularFiles(path.join(fixture.workspaceRoot, ".deep-mix", "tool-outputs"))).toEqual([]);
+    expect(await listRegularFiles(fixture.sessionStore.paths.toolOutputsDir)).toEqual([]);
     await expect(fs.stat(workspaceDestination)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await fs.readdir(downloads)).not.toContainEqual(expect.stringMatching(/^\.deep-mix-download-/u));
   });
@@ -1546,7 +1546,7 @@ describe("phase 16 retrieval selection and policy", () => {
     await sessionStore.ensureInitialized();
     const customDeniedPrefix = "custom-private-output";
     await fs.writeFile(
-      path.join(workspaceRoot, ".deep-mix", "permission-policy.json"),
+      path.join(sessionStore.paths.stateDir, "permission-policy.json"),
       JSON.stringify({
         version: 1,
         workspaceWriteRoots: ["."],
@@ -2357,7 +2357,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     expect(executionAudits(await fixture.sessionStore.loadEvents(fixture.sessionId)).at(-1)?.network)
       .toEqual(result.networkAudit);
     expect(await fixture.sessionStore.listToolOutputArtifacts(fixture.sessionId)).toEqual([]);
-    expect(await listRegularFiles(path.join(fixture.workspaceRoot, ".deep-mix", "tool-outputs"))).toEqual([]);
+    expect(await listRegularFiles(fixture.sessionStore.paths.toolOutputsDir)).toEqual([]);
   });
 
   it("enforces the same deadline after networking while waiting to persist a long-body artifact", async () => {
@@ -2383,7 +2383,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     expect(structured<{ networkErrorType: string }>(result)).toMatchObject({ networkErrorType: "timeout" });
     expect(result.networkAudit).toMatchObject({ requestCount: 1, status: 200, bytesReceived: Buffer.byteLength(body) });
     expect(await fixture.sessionStore.listToolOutputArtifacts(fixture.sessionId)).toEqual([]);
-    expect(await listRegularFiles(path.join(fixture.workspaceRoot, ".deep-mix", "tool-outputs"))).toEqual([]);
+    expect(await listRegularFiles(fixture.sessionStore.paths.toolOutputsDir)).toEqual([]);
   });
 
   it("publishes concurrent same-name downloads to distinct URIs whose bytes and hashes remain paired", async () => {
@@ -2846,7 +2846,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     expect(outcomes.filter((outcome) => !outcome.claimed)).toHaveLength(1);
     expect(outcomes.find((outcome) => outcome.claimed)?.approvalId).toBe(approvalId);
     expect(await store.loadApprovalGrant(session.sessionId, requestKey)).toBeUndefined();
-    await expect(fs.stat(path.join(workspaceRoot, ".deep-mix", "approval-state.json.lock")))
+    await expect(fs.stat(`${store.paths.approvalStatePath}.lock`))
       .rejects.toMatchObject({ code: "ENOENT" });
   }, 30_000);
 
@@ -3090,7 +3090,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     const fixture = await createToolFixture({ network });
     const trackedPath = path.join(fixture.workspaceRoot, "checkpoint-source.txt");
     await fs.writeFile(trackedPath, "checkpoint source", "utf8");
-    const checkpointsRoot = path.join(fixture.workspaceRoot, ".deep-mix", "checkpoints");
+    const checkpointsRoot = fixture.sessionStore.paths.checkpointsDir;
     const rootsBefore = (await fs.readdir(checkpointsRoot)).sort();
     const controller = new AbortController();
     const originalAppendEvent = fixture.sessionStore.appendEvent.bind(fixture.sessionStore);
@@ -3632,11 +3632,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     const fixture = await createToolFixture({ network: new FaithfulFakeNetwork([]) });
     const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deep-mix-phase16-protected-junction-"));
     temporaryRoots.push(outsideRoot);
-    const protectedRoot = path.join(
-      fixture.workspaceRoot,
-      ".deep-mix",
-      "protected-tool-calls",
-    );
+    const protectedRoot = fixture.sessionStore.paths.protectedToolCallsDir;
     await fs.rm(protectedRoot, { recursive: true, force: true });
     await fs.symlink(outsideRoot, protectedRoot, "junction");
     const protectedCall: ToolCall = {
@@ -3656,9 +3652,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deep-mix-phase16-output-junction-"));
     temporaryRoots.push(outsideRoot);
     const outputSessionDirectory = path.join(
-      fixture.workspaceRoot,
-      ".deep-mix",
-      "tool-outputs",
+      fixture.sessionStore.paths.toolOutputsDir,
       "network-responses",
       fixture.sessionId,
     );
@@ -3716,7 +3710,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
       expect(JSON.stringify(result)).not.toContain(attackerContent);
     }
     expect(JSON.stringify(artifactRead)).toMatch(/hash|integrity/iu);
-    expect(JSON.stringify(workspacePathRead)).toMatch(/protected|readable sandbox/iu);
+    expect(JSON.stringify(workspacePathRead)).toMatch(/protected|readable sandbox|escapes workspace/iu);
   });
 
   it("does not register or delete a concurrent tool-output path swapped in after publication", async () => {
@@ -3800,9 +3794,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
     expect(sessionId).not.toBe("");
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(await listRegularFiles(path.join(
-      workspaceRoot,
-      ".deep-mix",
-      "protected-tool-calls",
+      new SessionStore(workspaceRoot).paths.protectedToolCallsDir,
       sessionId,
     ))).toEqual([]);
     expect(network.attempts).toHaveLength(0);
@@ -3817,9 +3809,7 @@ describe("phase 16 high-risk network and artifact regressions", () => {
       rawArguments: '{"rawSecret":"delete-session-secret"}',
     };
     const protectedSessionDirectory = path.join(
-      fixture.workspaceRoot,
-      ".deep-mix",
-      "protected-tool-calls",
+      fixture.sessionStore.paths.protectedToolCallsDir,
       fixture.sessionId,
     );
     await fixture.sessionStore.storeProtectedToolCall(fixture.sessionId, call);

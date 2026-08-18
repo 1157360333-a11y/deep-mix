@@ -2,11 +2,13 @@ import type {
   ApprovalRecord,
   DiagnosticReportRecord,
   MessageRecord,
+  ModelAssignmentSnapshot,
+  ModelCapabilityManifest,
+  ModelSlotId,
   PermissionMode,
   PlanUpdateRecord,
   ReasoningEffort,
   ReplyStyle,
-  RouteTarget,
   SessionRecord,
   ThinkingModeType,
   ToolBatchStart,
@@ -19,10 +21,68 @@ import type {
   WorkerArtifactRecord,
   WorkerSessionStatus,
 } from "@deep-mix/shared-schema";
+import type { DesktopShortcutBindings, DesktopShortcutId } from "./shortcut-config";
 
 export interface DesktopProfileStatus {
   exists: boolean;
   hasKey: boolean;
+  provider?: string;
+  model?: string;
+  protocol?: string;
+  adapterId?: string;
+  baseUrl?: string;
+  endpointPath?: string;
+  capabilities?: ModelCapabilityManifest;
+  allowedSlots?: ModelSlotId[];
+}
+
+export interface DesktopModelReferenceStatus {
+  profileId: string;
+  displayName: string;
+  model?: string;
+  status: DesktopProfileStatus;
+}
+
+export interface DesktopModelSlotStatus {
+  slot: ModelSlotId;
+  primary: DesktopModelReferenceStatus;
+  fallbacks: DesktopModelReferenceStatus[];
+  fallbackEnabled: boolean;
+  requiredCapabilities: string[];
+  activationError?: string;
+}
+
+export interface DesktopModelCenterSettings {
+  preset: "classic" | "custom";
+  revision: number;
+  profileRevision: number;
+  candidates: DesktopModelReferenceStatus[];
+  slots: Record<ModelSlotId, DesktopModelSlotStatus>;
+}
+
+export interface DesktopModelProfileSaveInput {
+  slot: ModelSlotId;
+  expectedSettingsRevision: number;
+  expectedProfileRevision: number;
+  profileId: string;
+  displayName: string;
+  provider: string;
+  protocol: string;
+  adapterId: string;
+  apiKey?: string;
+  baseUrl: string;
+  endpointPath: string;
+  model: string;
+  capabilities: ModelCapabilityManifest;
+}
+
+export interface DesktopModelProbeResult {
+  profileId: string;
+  ok: boolean;
+  skipped?: boolean;
+  adapterId?: string;
+  latencyMs?: number;
+  redactedError?: string;
 }
 
 export interface DesktopExtension {
@@ -59,26 +119,35 @@ export interface DesktopSettings {
   workspaceName: string;
   gitBranch?: string;
   permissionMode: PermissionMode;
-  routeOverride?: RouteTarget;
   reasoningEffort: Exclude<ReasoningEffort, "not_applicable">;
   thinkingMode: ThinkingModeType;
   replyStyle: ReplyStyle;
+  shortcuts: DesktopShortcutBindings;
   profiles: {
     deepseek_governor: DesktopProfileStatus;
     glm_coding_worker: DesktopProfileStatus;
     kimi_vision: DesktopProfileStatus;
   };
+  models: DesktopModelCenterSettings;
   extensions: DesktopExtension[];
   capabilities: DesktopCapability[];
 }
 
 export interface DesktopSettingsPatch {
   permissionMode?: PermissionMode;
-  routeOverride?: RouteTarget | null;
   reasoningEffort?: Exclude<ReasoningEffort, "not_applicable">;
   thinkingMode?: ThinkingModeType;
   replyStyle?: ReplyStyle;
+  shortcuts?: Partial<Record<DesktopShortcutId, string | null>>;
   enabledSkills?: Record<string, boolean>;
+  models?: {
+    expectedRevision: number;
+    restoreClassic?: boolean;
+    slot?: ModelSlotId;
+    primaryProfileId?: string;
+    primaryModel?: string;
+    fallbackProfileIds?: string[];
+  };
 }
 
 export interface SessionSummary extends SessionRecord {}
@@ -124,10 +193,12 @@ export interface DesktopStopManagedProcessResult {
 
 export interface WorkerStatusView {
   workerSessionId: string;
+  parentSessionId?: string;
   workerType: "coding" | "vision" | "review" | "research";
   status: WorkerSessionStatus;
   objective: string;
   updatedAt: string;
+  modelAssignment?: ModelAssignmentSnapshot;
 }
 
 export interface DesktopRuntime {
@@ -139,9 +210,8 @@ export interface DesktopRuntime {
     sessionId?: string;
     workspaceRoot?: string;
     prompt: string;
-    routeOverride?: RouteTarget;
     attachments?: AttachmentDescriptor[];
-  }): Promise<void>;
+  }): Promise<{ sessionId?: string }>;
   interruptSession(sessionId: string): Promise<void>;
   listManagedProcesses(sessionId: string): Promise<ToolProcessSession[]>;
   stopManagedProcess(sessionId: string, processSessionId: string): Promise<DesktopStopManagedProcessResult>;
@@ -163,6 +233,8 @@ export interface DesktopRuntime {
 
   getSettings(workspaceRoot?: string): Promise<DesktopSettings>;
   updateSettings(patch: DesktopSettingsPatch, workspaceRoot?: string): Promise<DesktopSettings>;
+  saveModelProfile(input: DesktopModelProfileSaveInput, workspaceRoot?: string): Promise<DesktopSettings>;
+  probeModel(profileId: string, workspaceRoot?: string): Promise<DesktopModelProbeResult>;
   chooseAttachments(workspaceRoot?: string): Promise<AttachmentDescriptor[]>;
   describeDroppedFiles(paths: string[], workspaceRoot?: string): Promise<AttachmentDescriptor[]>;
   readClipboardImage(workspaceRoot?: string): Promise<AttachmentDescriptor | null>;
@@ -216,6 +288,8 @@ export type IpcChannel =
   | "deep-mix:respondToUserInput"
   | "deep-mix:getSettings"
   | "deep-mix:updateSettings"
+  | "deep-mix:saveModelProfile"
+  | "deep-mix:probeModel"
   | "deep-mix:chooseAttachments"
   | "deep-mix:describeDroppedFiles"
   | "deep-mix:readClipboardImage"
@@ -259,6 +333,8 @@ export const IPC_CHANNELS: IpcChannel[] = [
   "deep-mix:respondToUserInput",
   "deep-mix:getSettings",
   "deep-mix:updateSettings",
+  "deep-mix:saveModelProfile",
+  "deep-mix:probeModel",
   "deep-mix:chooseAttachments",
   "deep-mix:describeDroppedFiles",
   "deep-mix:readClipboardImage",

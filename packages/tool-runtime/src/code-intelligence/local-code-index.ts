@@ -4,6 +4,7 @@ import type { Dirent, Stats } from "node:fs";
 import path from "node:path";
 
 import type { CodeRange } from "../../../shared-schema/src/index.js";
+import { resolveWorkspaceStateDirectory } from "../../../state-location/src/index.js";
 import { publishTextFileAtomic } from "../atomic-file.js";
 import {
   isProbablyTextFile,
@@ -32,7 +33,6 @@ import {
   LanguageAdapterRegistry,
 } from "./language-adapters.js";
 
-const STATE_DIRECTORY = ".deep-mix/code-index";
 const STATE_FILE = "index-v1.json";
 const PROVISIONAL_INDEX_VERSION = `code-index-v1.pending.${"0".repeat(48)}`;
 const UNAVAILABLE_REPOSITORY_FINGERPRINT = "repository-fingerprint-unavailable";
@@ -382,31 +382,22 @@ async function ensureRealPathContained(workspaceRoot: string, absolutePath: stri
   }
 }
 
-async function ensureStateDirectorySafe(workspaceRoot: string, create: boolean): Promise<string> {
-  const deepMixDirectory = path.join(workspaceRoot, ".deep-mix");
-  const stateDirectory = path.join(workspaceRoot, STATE_DIRECTORY);
-  for (const directory of [deepMixDirectory, stateDirectory]) {
-    const existing = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (existing?.isSymbolicLink() || (existing && !existing.isDirectory())) {
-      throw new Error("Code index state directory is not a trusted real directory.");
-    }
-    if (!existing) {
-      if (!create) return stateDirectory;
-      continue;
-    }
-    await ensureRealPathContained(workspaceRoot, directory);
+async function ensureStateDirectorySafe(stateDirectory: string, create: boolean): Promise<string> {
+  const existing = await fs.lstat(stateDirectory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!existing) {
+    if (!create) return stateDirectory;
+    await fs.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   }
-  if (!create) return stateDirectory;
-  await fs.mkdir(stateDirectory, { recursive: true, mode: 0o700 });
-  for (const directory of [deepMixDirectory, stateDirectory]) {
-    const confirmed = await fs.lstat(directory);
-    if (!confirmed.isDirectory() || confirmed.isSymbolicLink()) {
-      throw new Error("Code index state directory is not a trusted real directory.");
-    }
-    await ensureRealPathContained(workspaceRoot, directory);
+  const confirmed = await fs.lstat(stateDirectory);
+  if (!confirmed.isDirectory() || confirmed.isSymbolicLink()) {
+    throw new Error("Code index state directory is not a trusted real directory.");
+  }
+  const realDirectory = await fs.realpath(stateDirectory);
+  if (canonicalWorkspacePath(realDirectory) !== canonicalWorkspacePath(path.resolve(stateDirectory))) {
+    throw new Error("Code index state directory resolves through an untrusted link or junction.");
   }
   return stateDirectory;
 }
@@ -449,6 +440,8 @@ export class LocalCodeIndex {
 
   public readonly statePath: string;
 
+  private readonly stateDirectory: string;
+
   public readonly limits: Readonly<CodeIndexLimits>;
 
   public readonly adapters: LanguageAdapterRegistry;
@@ -478,7 +471,10 @@ export class LocalCodeIndex {
   private constructor(workspaceRoot: string, workspaceId: string, options: LocalCodeIndexOptions) {
     this.workspaceRoot = workspaceRoot;
     this.workspaceId = workspaceId;
-    this.statePath = path.join(workspaceRoot, STATE_DIRECTORY, STATE_FILE);
+    this.stateDirectory = path.resolve(
+      options.stateDirectory ?? path.join(resolveWorkspaceStateDirectory(workspaceRoot), "code-index"),
+    );
+    this.statePath = path.join(this.stateDirectory, STATE_FILE);
     this.limits = mergeLimits(options.limits);
     this.adapters = createDefaultLanguageAdapterRegistry(options.adapters);
     this.defaultRepositoryFingerprint = options.repositoryFingerprint ??
@@ -499,7 +495,7 @@ export class LocalCodeIndex {
   }
 
   private async loadPersistedState(): Promise<void> {
-    await ensureStateDirectorySafe(this.workspaceRoot, false);
+    await ensureStateDirectorySafe(this.stateDirectory, false);
     const stat = await fs.lstat(this.statePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
@@ -1077,7 +1073,7 @@ export class LocalCodeIndex {
     }
 
     throwIfInterrupted(options.signal, deadlineAt);
-    await ensureStateDirectorySafe(this.workspaceRoot, true);
+    await ensureStateDirectorySafe(this.stateDirectory, true);
     await publishTextFileAtomic(this.statePath, serialized, options.signal);
     await fs.chmod(this.statePath, 0o600).catch(() => undefined);
     throwIfInterrupted(options.signal, deadlineAt);

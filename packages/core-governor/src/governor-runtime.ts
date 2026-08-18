@@ -6,10 +6,11 @@ import type {
   ContextCompactionRecord,
   ContextSummaryRecord,
   ConversationMessage,
-  DeepSeekProviderConfig,
+  GovernorModelConfig,
   HistoryIntegrityScope,
   McpServerStatus,
   MessageRecord,
+  ModelAssignmentSnapshot,
   ModelClient,
   PermissionMode,
   RuntimeCapabilitySnapshot,
@@ -38,12 +39,13 @@ import { SpecialistBroker } from "../../specialist-broker/src/index.js";
 import { PromptCompiler } from "./prompt-compiler.js";
 import {
   buildSessionTitleMessages,
+  createFallbackSessionTitle,
   normalizeGeneratedSessionTitle,
   SESSION_TITLE_SYSTEM_PROMPT,
 } from "./session-title.js";
 import { ToolRuntime, PermissionRequiredError } from "../../tool-runtime/src/index.js";
 import type { ToolNetworkService } from "../../tool-runtime/src/network/index.js";
-import { DeepSeekClient } from "./deepseek-client.js";
+import { createDefaultModelAdapterRegistry, FallbackModelClient, ModelAdapterError, type ResolvedModelProfile } from "../../model-adapters/src/index.js";
 import {
   formatPostExposureToolSummary,
   HistoryIntegrityError,
@@ -64,19 +66,46 @@ import { SkillEngine } from "../../skill-engine/src/index.js";
 import { McpRegistry } from "../../mcp-hub/src/index.js";
 import {
   createFallbackRoutingDecision,
+  createModelAssignmentSnapshot,
   createGovernorRouteProfile,
   extractContextRefs,
   extractImageRef,
   inferVisionSourceType,
   inferVisionTaskType,
-  loadDeepSeekProviderConfig,
+  loadGovernorModelCandidates,
   resolveRoutingDecision,
 } from "../../route-resolver/src/index.js";
+import { loadDeepMixSettingsSync, resolveEffectiveModelSettings } from "../../settings/src/index.js";
 import { SupervisorReviewService } from "./supervisor-review-service.js";
 import { HookBus, type HookHandler, WorkflowRuntime } from "../../workflow-runtime/src/index.js";
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function toResolvedGovernorProfile(config: GovernorModelConfig): ResolvedModelProfile {
+  return {
+    profileId: config.profileId ?? "classic_governor",
+    provider: config.provider ?? "legacy-governor",
+    protocol: config.protocol ?? "openai_chat_completions",
+    adapterId: config.adapterId ?? "openai_compatible",
+    baseUrl: config.baseUrl,
+    endpointPath: config.endpointPath,
+    model: config.model,
+    capabilities: config.capabilities ?? {
+      textInput: true,
+      imageInput: false,
+      streaming: config.stream,
+      nativeToolCalling: true,
+      structuredOutput: true,
+      reasoning: config.thinking.type !== "disabled",
+      contextWindow: config.contextWindow,
+    },
+    allowedSlots: ["governor"],
+    apiKey: config.apiKey,
+    headers: config.headers ?? {},
+    requestDefaults: config.requestDefaults ?? {},
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -88,6 +117,12 @@ function isHistoryProviderError(error: unknown): boolean {
   return /Messages with role 'tool' must be a response to a preceding message with 'tool_calls'|reasoning_content.*must be passed back/i.test(
     (error as Error).message,
   );
+}
+
+export function isReplayableWorkerFailure(result: ToolResult): boolean {
+  if (result.success || (result.artifacts?.length ?? 0) > 0) return false;
+  const evidence = `${result.error ?? ""}\n${result.output}\n${JSON.stringify(result.structuredContent ?? {})}`;
+  return !/permission|denied|cancel|interrupt|input_validation|invalid input|artifact:\/\//i.test(evidence);
 }
 
 function buildConversationMessages(messages: MessageRecord[]): ConversationMessage[] {
@@ -144,7 +179,7 @@ function isWorkerToolCall(toolName: string): boolean {
 }
 
 function hasExplicitWorkerInstruction(prompt: string): boolean {
-  return /\b(coding worker|vision worker|invoke_coding_worker|invoke_vision_worker|glm|kimi)\b|编码 worker|视觉 worker/i.test(
+  return /\b(coding worker|vision worker|invoke_coding_worker|invoke_vision_worker)\b|编码 worker|视觉 worker/i.test(
     prompt,
   );
 }
@@ -584,7 +619,13 @@ export class GovernorRuntime {
 
   private readonly supervisorReviewService: SupervisorReviewService;
 
-  private readonly deepSeekConfig: DeepSeekProviderConfig;
+  private readonly governorConfig: GovernorModelConfig;
+
+  private readonly governorAssignment: ModelAssignmentSnapshot;
+
+  private readonly allowCodingGovernorFallback: boolean;
+
+  private readonly allowVisionGovernorFallback: boolean;
 
   private readonly routeProfile: ReturnType<typeof createGovernorRouteProfile>;
 
@@ -594,10 +635,19 @@ export class GovernorRuntime {
 
   public constructor(options: GovernorRuntimeOptions) {
     const environment = options.environment ?? process.env;
-    this.deepSeekConfig = loadDeepSeekProviderConfig(options.workspaceRoot, environment, {
-      allowMissingProfileForInjectedClient: Boolean(options.modelClient),
+    const governorCandidates = loadGovernorModelCandidates(options.workspaceRoot, environment);
+    this.governorConfig = governorCandidates.configs[0]!;
+    this.governorAssignment = createModelAssignmentSnapshot({
+      slot: "governor",
+      config: this.governorConfig,
+      configRevision: governorCandidates.settingsRevision,
+      selectionReason: governorCandidates.preset === "classic" ? "classic_preset" : "primary",
+      source: governorCandidates.source,
     });
-    this.routeProfile = createGovernorRouteProfile(this.deepSeekConfig);
+    const workerBindings = resolveEffectiveModelSettings(loadDeepMixSettingsSync(options.workspaceRoot, { collectErrors: false }).settings).slots;
+    this.allowCodingGovernorFallback = workerBindings.coding.fallbackPolicy?.allowGovernorDirectFallback ?? false;
+    this.allowVisionGovernorFallback = workerBindings.vision.fallbackPolicy?.allowGovernorDirectFallback ?? false;
+    this.routeProfile = createGovernorRouteProfile(this.governorConfig);
     this.sessionStore = new SessionStore(options.workspaceRoot);
     this.hookBus = new HookBus();
     this.skillEngine = new SkillEngine(options.workspaceRoot);
@@ -609,16 +659,16 @@ export class GovernorRuntime {
         sessionStore: this.sessionStore,
       });
     this.promptCompiler = new PromptCompiler({
-      model: this.deepSeekConfig.model,
-      contextWindow: this.deepSeekConfig.contextWindow,
-      softLimitTokens: this.deepSeekConfig.contextSoftLimitTokens,
-      compactThresholdTokens: this.deepSeekConfig.contextCompactThresholdTokens,
-      reserveOutputTokens: this.deepSeekConfig.contextReserveOutputTokens,
-      summaryMaxTokens: this.deepSeekConfig.contextSummaryMaxTokens,
-      recentTailMaxTokens: this.deepSeekConfig.contextRecentTailMaxTokens,
-      legacyMaxMessages: this.deepSeekConfig.maxHistoryMessages > 0 ? this.deepSeekConfig.maxHistoryMessages : undefined,
-      legacyMaxChars: this.deepSeekConfig.maxHistoryMessages > 0 ? this.deepSeekConfig.historyCharBudget : undefined,
-      replyStyle: this.deepSeekConfig.replyStyle,
+      model: this.governorConfig.model,
+      contextWindow: this.governorConfig.contextWindow,
+      softLimitTokens: this.governorConfig.contextSoftLimitTokens,
+      compactThresholdTokens: this.governorConfig.contextCompactThresholdTokens,
+      reserveOutputTokens: this.governorConfig.contextReserveOutputTokens,
+      summaryMaxTokens: this.governorConfig.contextSummaryMaxTokens,
+      recentTailMaxTokens: this.governorConfig.contextRecentTailMaxTokens,
+      legacyMaxMessages: this.governorConfig.maxHistoryMessages > 0 ? this.governorConfig.maxHistoryMessages : undefined,
+      legacyMaxChars: this.governorConfig.maxHistoryMessages > 0 ? this.governorConfig.historyCharBudget : undefined,
+      replyStyle: this.governorConfig.replyStyle,
     });
     this.toolRuntime = new ToolRuntime({
       workspaceRoot: options.workspaceRoot,
@@ -635,7 +685,26 @@ export class GovernorRuntime {
       this.toolRuntime,
       this.specialistBroker,
     );
-    this.modelClient = options.modelClient ?? new DeepSeekClient(this.deepSeekConfig);
+    if (options.modelClient) {
+      this.modelClient = options.modelClient;
+    } else {
+      const registry = createDefaultModelAdapterRegistry();
+      const candidates = governorCandidates.configs.map((config) => {
+        const profile = toResolvedGovernorProfile(config);
+        return {
+          profile,
+          client: registry.resolve(profile.adapterId).createTextClient(profile, {
+            maxRetries: config.maxRetries,
+            timeoutMs: config.timeoutMs,
+            stream: config.stream,
+            temperature: config.temperature,
+          }),
+        };
+      });
+      this.modelClient = candidates.length === 1
+        ? candidates[0]!.client
+        : new FallbackModelClient(candidates, new Set(governorCandidates.fallbackPolicy.on));
+    }
     this.maxToolCycles = readBoundedInteger(
       environment.DEEP_MIX_MAX_TOOL_CYCLES,
       DEFAULT_MAX_TOOL_CYCLES,
@@ -1707,23 +1776,31 @@ export class GovernorRuntime {
   }
 
   public async generateSessionTitle(input: {
-    userRequest: string;
-    assistantResponse: string;
+    messages: MessageRecord[];
   }): Promise<string | undefined> {
-    const response = await this.modelClient.streamCompletion({
-      route: {
-        ...this.routeProfile,
-        thinkingMode: { mode: "disabled", reasoningEffort: "not_applicable" },
-      },
-      systemPrompt: SESSION_TITLE_SYSTEM_PROMPT,
-      messages: buildSessionTitleMessages(input),
-      tools: [],
-      stream: false,
-      temperature: 0.1,
-      maxOutputTokens: 48,
-      inactivityTimeoutMs: Math.min(this.deepSeekConfig.timeoutMs, 30_000),
-    });
-    return normalizeGeneratedSessionTitle(response.content);
+    const firstUserRequest = input.messages.find((message) => message.role === "user")?.content ?? "";
+    const fallbackTitle = createFallbackSessionTitle(firstUserRequest);
+    try {
+      const response = await this.modelClient.streamCompletion({
+        route: {
+          ...this.routeProfile,
+          thinkingMode: { mode: "disabled", reasoningEffort: "not_applicable" },
+        },
+        systemPrompt: SESSION_TITLE_SYSTEM_PROMPT,
+        messages: buildSessionTitleMessages(input),
+        tools: [],
+        stream: false,
+        temperature: 0.1,
+        // Some OpenAI-compatible reasoning models ignore the disabled-thinking hint.
+        // The visible title stays short, but the model gets enough room to understand
+        // a complete, tool-heavy first turn before producing that abstraction.
+        maxOutputTokens: 1_024,
+        inactivityTimeoutMs: Math.min(this.governorConfig.timeoutMs, 30_000),
+      });
+      return normalizeGeneratedSessionTitle(response.content) ?? fallbackTitle;
+    } catch {
+      return fallbackTitle;
+    }
   }
 
   public async runTurn(input: {
@@ -1756,6 +1833,7 @@ export class GovernorRuntime {
       sessionId: session.sessionId,
       requestSummary: input.prompt,
       userMessageId: "pending",
+      modelAssignment: this.governorAssignment,
     });
     const userMessage = await this.sessionStore.appendMessage({
       sessionId: session.sessionId,
@@ -1809,7 +1887,7 @@ export class GovernorRuntime {
         activeRoutingDecision,
         promptContext,
         usedWorkerTool,
-        recordDirectDsSuccess: true,
+        recordGovernorDirectSuccess: true,
         signal: turnAbortController.signal,
       });
     } catch (error) {
@@ -1841,7 +1919,7 @@ export class GovernorRuntime {
     activeRoutingDecision: RoutingDecision;
     promptContext: PromptContextSnapshot;
     usedWorkerTool?: boolean;
-    recordDirectDsSuccess?: boolean;
+    recordGovernorDirectSuccess?: boolean;
     signal?: AbortSignal;
     initialToolLoopState?: ToolLoopState;
   }): Promise<RunTurnResult> {
@@ -1885,9 +1963,9 @@ export class GovernorRuntime {
         ? allRecentMessages.slice(manualBoundaryIndex + 1)
         : allRecentMessages;
       const workerRoutes =
-        activeRoutingDecision.finalTarget === "glm_coding"
+        activeRoutingDecision.finalTarget === "coding_worker"
           ? (["coding"] as const)
-          : activeRoutingDecision.finalTarget === "kimi_vision"
+          : activeRoutingDecision.finalTarget === "vision_worker"
             ? (["vision"] as const)
             : [];
       const activeLeases = await this.toolRuntime.loadActiveToolSelectionLeases(
@@ -1979,6 +2057,7 @@ export class GovernorRuntime {
           content: requestInstruction,
         });
       }
+      const modelInvocationStartedAt = Date.now();
       try {
         response = await this.modelClient.streamCompletion(
           {
@@ -1987,12 +2066,12 @@ export class GovernorRuntime {
             messages: providerMessages,
             tools: providerTools,
             stream: true,
-            temperature: this.deepSeekConfig.temperature,
+            temperature: this.governorConfig.temperature,
             maxOutputTokens: atToolCycleBoundary
-              ? Math.min(this.deepSeekConfig.contextReserveOutputTokens, TOOL_CYCLE_BOUNDARY_MAX_OUTPUT_TOKENS)
-              : this.deepSeekConfig.contextReserveOutputTokens,
+              ? Math.min(this.governorConfig.contextReserveOutputTokens, TOOL_CYCLE_BOUNDARY_MAX_OUTPUT_TOKENS)
+              : this.governorConfig.contextReserveOutputTokens,
             inactivityTimeoutMs: atToolCycleBoundary
-              ? Math.min(this.deepSeekConfig.timeoutMs, TOOL_CYCLE_BOUNDARY_INACTIVITY_TIMEOUT_MS)
+              ? Math.min(this.governorConfig.timeoutMs, TOOL_CYCLE_BOUNDARY_INACTIVITY_TIMEOUT_MS)
               : undefined,
             signal: input.signal,
           },
@@ -2004,6 +2083,7 @@ export class GovernorRuntime {
               },
         );
       } catch (error) {
+        await this.recordGovernorModelInvocation(input.sessionId, "failure", modelInvocationStartedAt);
         if (atToolCycleBoundary && isProviderTimeoutError(error)) {
           const forceComplete = toolCycle >= this.maxToolCycles;
           response = {
@@ -2028,11 +2108,21 @@ export class GovernorRuntime {
             "Continue the same task from that persisted state. Do not repeat completed writes or re-emit whole file bodies; use apply_patch replace_text for existing-file edits.",
           ].join("\n");
           continue;
+        } else if (error instanceof ModelAdapterError) {
+          throw new Error([
+            "model_request_failed",
+            "slot=governor",
+            `profile=${error.profileId ?? this.governorConfig.profileId ?? "unknown"}`,
+            `adapter=${error.adapterId}`,
+            `retryable=${error.retryable}`,
+            `reason=${error.message}`,
+          ].join("; "));
         } else {
           throw error;
         }
       }
       const usage = this.finalizeUsageSnapshot(prompt.contextBudget, response);
+      await this.recordGovernorModelInvocation(input.sessionId, "success", modelInvocationStartedAt, usage);
       await this.recordContextBudget(input.sessionId, input.turnId, "after_model", prompt.contextBudget, prompt.compaction, usage);
 
       if (atToolCycleBoundary) {
@@ -2087,8 +2177,8 @@ export class GovernorRuntime {
           status: "waiting_for_user",
         });
         const updatedSession = await this.sessionStore.setSessionStatus(input.sessionId, "waiting_for_user");
-        if (!forceComplete && input.recordDirectDsSuccess && input.initialRoutingDecision.finalTarget === "ds_direct" && !usedWorkerTool) {
-          await this.sessionStore.recordDirectDsSuccess(input.sessionId, input.turnId);
+        if (!forceComplete && input.recordGovernorDirectSuccess && input.initialRoutingDecision.finalTarget === "governor_direct" && !usedWorkerTool) {
+          await this.sessionStore.recordGovernorDirectSuccess(input.sessionId, input.turnId);
         }
         return {
           sessionId: input.sessionId,
@@ -2177,8 +2267,8 @@ export class GovernorRuntime {
           status: "waiting_for_user",
         });
         const updatedSession = await this.sessionStore.setSessionStatus(input.sessionId, "waiting_for_user");
-        if (input.recordDirectDsSuccess && input.initialRoutingDecision.finalTarget === "ds_direct" && !usedWorkerTool) {
-          await this.sessionStore.recordDirectDsSuccess(input.sessionId, input.turnId);
+        if (input.recordGovernorDirectSuccess && input.initialRoutingDecision.finalTarget === "governor_direct" && !usedWorkerTool) {
+          await this.sessionStore.recordGovernorDirectSuccess(input.sessionId, input.turnId);
         }
         return {
           sessionId: input.sessionId,
@@ -2216,17 +2306,24 @@ export class GovernorRuntime {
         (toolCall, index) => isWorkerToolCall(toolCall.name) && !toolResults[index]?.success,
       );
       if (failedWorkerTool) {
-        activeRoutingDecision = createFallbackRoutingDecision({
-          previousDecision: activeRoutingDecision,
-          reasonCode: failedWorkerTool.name === "invoke_coding_worker" ? "coding_worker_failed" : "vision_worker_failed",
-        });
-        await this.sessionStore.recordRoutingDecision({
-          recordType: "routing_decision",
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          createdAt: now(),
-          ...activeRoutingDecision,
-        });
+        const failedIndex = response.toolCalls.indexOf(failedWorkerTool);
+        const failedResult = toolResults[failedIndex];
+        const policyAllows = failedWorkerTool.name === "invoke_coding_worker"
+          ? this.allowCodingGovernorFallback
+          : this.allowVisionGovernorFallback;
+        if (failedResult && policyAllows && isReplayableWorkerFailure(failedResult)) {
+          activeRoutingDecision = createFallbackRoutingDecision({
+            previousDecision: activeRoutingDecision,
+            reasonCode: failedWorkerTool.name === "invoke_coding_worker" ? "coding_worker_failed" : "vision_worker_failed",
+          });
+          await this.sessionStore.recordRoutingDecision({
+            recordType: "routing_decision",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            createdAt: now(),
+            ...activeRoutingDecision,
+          });
+        }
       }
       const waitingControl = toolResults.find(
         (result) => result.control?.type === "wait_for_user",
@@ -2356,33 +2453,24 @@ export class GovernorRuntime {
       ...input.routeDecision,
     });
 
-    if (input.routeDecision.finalTarget === "ds_direct" || hasExplicitWorkerInstruction(input.prompt)) {
+    if (input.routeDecision.finalTarget === "governor_direct" || hasExplicitWorkerInstruction(input.prompt)) {
       return {
         decision: input.routeDecision,
         usedWorkerTool: false,
       };
     }
 
-    if (input.routeDecision.finalTarget === "kimi_vision") {
+    if (input.routeDecision.finalTarget === "vision_worker") {
       const autoVisionInput = buildAutoVisionWorkerInput(input.prompt, input.routeDecision);
       if (!autoVisionInput) {
-        const fallbackDecision: RoutingDecision = {
-          ...input.routeDecision,
-          mode: "fallback",
-          finalTarget: "ds_direct",
-          ruleId: `${input.routeDecision.ruleId}:missing-vision-input`,
-          reasonCodes: ["vision_input_missing", "fallback_to_governor"],
-          reasonSummary: "Route fell back to DeepSeek because the prompt did not include a concrete image reference.",
-        };
-        await this.sessionStore.recordRoutingDecision({
-          recordType: "routing_decision",
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          createdAt: now(),
-          ...fallbackDecision,
-        });
+        if (input.routeDecision.mode === "manual_override") {
+          throw new Error("invalid_input: an explicit vision_worker route requires a concrete image reference; fallback is forbidden for invalid input.");
+        }
+        // Automatic intent classification can precede the Governor discovering an
+        // artifact/upload reference through its normal tool loop. Defer dispatch
+        // without changing the semantic route or claiming a visual result.
         return {
-          decision: fallbackDecision,
+          decision: input.routeDecision,
           usedWorkerTool: false,
         };
       }
@@ -2409,6 +2497,9 @@ export class GovernorRuntime {
       });
       const result = await this.executeRecordedToolCall(input.sessionId, input.turnId, toolCall, input.callbacks, input.toolCallIds);
       if (!result.success) {
+        if (!this.allowVisionGovernorFallback || !isReplayableWorkerFailure(result)) {
+          throw new Error("fallback_forbidden: vision worker failed after a non-replayable boundary or policy disabled governor fallback.");
+        }
         const fallbackDecision = createFallbackRoutingDecision({
           previousDecision: input.routeDecision,
           reasonCode: "vision_worker_failed",
@@ -2457,6 +2548,9 @@ export class GovernorRuntime {
     });
     const result = await this.executeRecordedToolCall(input.sessionId, input.turnId, toolCall, input.callbacks, input.toolCallIds);
     if (!result.success) {
+      if (!this.allowCodingGovernorFallback || !isReplayableWorkerFailure(result)) {
+        throw new Error("fallback_forbidden: coding worker failed after a non-replayable boundary or policy disabled governor fallback.");
+      }
       const fallbackDecision = createFallbackRoutingDecision({
         previousDecision: input.routeDecision,
         reasonCode: "coding_worker_failed",
@@ -3052,6 +3146,35 @@ export class GovernorRuntime {
         ((response.usage.inputTokens ?? estimated.inputTokens ?? 0) + (response.usage.outputTokens ?? estimated.outputTokens ?? 0)),
     };
     return usage;
+  }
+
+  private async recordGovernorModelInvocation(
+    sessionId: string,
+    result: "success" | "failure",
+    startedAt: number,
+    usage?: TokenUsageSnapshot,
+  ): Promise<void> {
+    const selected = this.modelClient instanceof FallbackModelClient ? this.modelClient.lastSelection : undefined;
+    const assignment: ModelAssignmentSnapshot = selected ? Object.freeze({
+      ...this.governorAssignment,
+      assignmentId: randomUUID(),
+      profileId: selected.profile.profileId,
+      provider: selected.profile.provider,
+      model: selected.profile.model,
+      adapterId: selected.profile.adapterId,
+      protocol: selected.profile.protocol,
+      capabilities: Object.freeze({ ...selected.profile.capabilities }),
+      selectedAt: now(),
+      selectionReason: selected.fallbackIndex === 0 ? this.governorAssignment.selectionReason : "ordered_fallback",
+      fallbackIndex: selected.fallbackIndex,
+    }) : this.governorAssignment;
+    await this.sessionStore.recordModelInvocation(sessionId, assignment, {
+      result,
+      latencyMs: Date.now() - startedAt,
+      inputTokens: usage?.inputTokens,
+      outputTokens: usage?.outputTokens,
+      reasoningTokens: usage?.reasoningTokens,
+    }).catch(() => undefined);
   }
 
   private async recordContextBudget(

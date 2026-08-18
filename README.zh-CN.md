@@ -2,9 +2,9 @@
 
 [English](README.md) · [快速开始](docs/getting-started.md) · [安全模型](docs/security-model.md) · [参与贡献](CONTRIBUTING.md)
 
-Deep-Mix 是一个本地优先的多模型 coding agent runtime。DeepSeek 是唯一的 governor 与 supervisor；可选的 GLM、Kimi worker 分别提供隔离的编码和视觉协助；所有最终工作区副作用仍统一经过 `Tool Runtime + Permission Layer`。
+Deep-Mix 是一个本地优先的多模型 coding agent runtime。可配置的 `governor` 槽位是唯一 governor 与 supervisor，隔离的 `coding`、`vision` 槽位提供专项协助；所有最终工作区副作用仍统一经过 `Tool Runtime + Permission Layer`。`DeepSeek + GLM + Kimi` 仅作为 `classic` 兼容预设，不是固定的运行时契约。
 
-> **v1.0.0 是面向开发者的源码版本。** 仓库包含 CLI 与 Electron Desktop，但暂不提供签名安装包或托管服务。模型调用费用由你配置的服务商收取。
+> **v1.1.0 是面向开发者的源码版本。** 仓库包含 CLI 与 Electron Desktop，但暂不提供签名安装包或托管服务。模型调用费用由你配置的服务商收取。
 
 ![Deep-Mix 桌面端深色模式](docs/assets/desktop-dark.png)
 
@@ -22,9 +22,9 @@ Deep-Mix 不只是把提示词路由给多个模型，而是把多模型协作�
 ## 当前包含
 
 - 支持恢复、导出、撤销、上下文诊断和审批的多轮 CLI
-- 支持项目选择、会话管理、附件、主题和审批的 Electron Desktop
-- 支持流式输出、工具调用、上下文压缩和历史完整性修复的 DeepSeek 主控
-- 可选的隔离 GLM 编码 worker 与 Kimi 视觉 worker
+- 支持项目选择、会话管理、附件、主题、可配置快捷键、模型配置和审批的 Electron Desktop
+- 支持能力门禁、有序回退的 `governor`、`coding`、`vision` 模型槽位
+- 支持流式主控、隔离 worker、上下文压缩、不可变模型快照和历史完整性修复
 - `plan`、`edit`、`auto`、`danger-full-access` 四种权限模式
 - 仓库、文件、补丁、Shell、Git、网络、文档、表格、演示文稿、Notebook、归档和质量工具
 - 写入 checkpoint 与 rollback 记录
@@ -33,7 +33,7 @@ Deep-Mix 不只是把提示词路由给多个模型，而是把多模型协作�
 
 ## 快速开始
 
-要求：Node.js `22.12+`、npm `10+`、Git，以及一个可用的 DeepSeek-compatible API profile。当前主要验证环境是 Windows 10/11 + PowerShell；TypeScript 核心具备可移植性，但平台相关测试目前偏向 Windows。
+要求：Node.js `22.12+`、npm `10+`、Git，以及一个可用的 governor profile。当前主要验证环境是 Windows 10/11 + PowerShell；TypeScript 核心具备可移植性，但平台相关测试目前偏向 Windows。
 
 ```powershell
 git clone https://github.com/1157360333-a11y/deep-mix.git
@@ -93,7 +93,8 @@ Deep-Mix **不是操作系统沙箱**。它继承当前用户的系统权限。�
 | [测试说明](docs/testing.md) | 快速、集成、平台与发布验证 |
 | [故障排查](docs/troubleshooting.md) | 常见安装和运行问题 |
 | [路线图](docs/roadmap.md) | 1.0 之后的方向，不构成发布承诺 |
-| [v1.0.0 发布说明](docs/releases/v1.0.0.md) | 范围、兼容性与已知限制 |
+| [v1.1.0 发布说明](docs/releases/v1.1.0.md) | 范围、迁移、验证与已知限制 |
+| [v1.0.0 发布说明](docs/releases/v1.0.0.md) | 首个公开源码版本 |
 
 ## 开发与验证
 
@@ -108,7 +109,7 @@ npm run desktop:build
 
 ## 版本定位
 
-`v1.0.0` 冻结公开架构和首个源码发布契约，但不代表已经具备 OS 级进程隔离、签名二进制、云同步或对所有 OpenAI-compatible 服务商的兼容。请查看[发布说明](docs/releases/v1.0.0.md)与[路线图](docs/roadmap.md)。
+`v1.1.0` 新增可配置模型编排、用户级工作区状态和大幅调整后的 Desktop 体验，同时保持唯一 governor 与权限层边界。它仍不代表已经具备 OS 级进程隔离、签名二进制、云同步或对所有 OpenAI-compatible 服务商的兼容。请查看[发布说明](docs/releases/v1.1.0.md)与[路线图](docs/roadmap.md)。
 
 ## License
 

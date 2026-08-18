@@ -499,7 +499,7 @@ describe("phase 4 Kimi vision worker integration", () => {
     expect(result.finalResponse).toContain("OCR summary collected");
 
     const sessionJsonl = await fs.readFile(
-      path.join(workspaceRoot, ".deep-mix", "sessions", `${result.sessionId}.jsonl`),
+      path.join(sessionStore.paths.sessionsDir, `${result.sessionId}.jsonl`),
       "utf8",
     );
     expect(sessionJsonl).toContain("\"name\":\"invoke_vision_worker\"");
@@ -507,7 +507,7 @@ describe("phase 4 Kimi vision worker integration", () => {
     expect(sessionJsonl).not.toContain("data:image/webp;base64");
     expect(sessionJsonl).toContain("artifact://records/");
 
-    const recordsDir = path.join(workspaceRoot, ".deep-mix", "worker-artifacts", "records");
+    const recordsDir = sessionStore.paths.artifactRecordsDir;
     const recordFiles = await fs.readdir(recordsDir);
     expect(recordFiles.length).toBeGreaterThan(0);
     const storedArtifact = await fs.readFile(path.join(recordsDir, recordFiles[0]!), "utf8");

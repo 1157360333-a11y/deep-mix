@@ -4,7 +4,8 @@ import type {
   WorkerFailureType,
   WorkerTask,
 } from "../../shared-schema/src/index.js";
-import type { GlmCodingWorkerConfig } from "../../route-resolver/src/index.js";
+import type { CodingWorkerModelConfig } from "../../route-resolver/src/index.js";
+import { createDefaultModelAdapterRegistry, ModelAdapterError, type ModelAdapterRegistry, type ResolvedModelProfile } from "../../model-adapters/src/index.js";
 
 export interface CodeArtifactDraft {
   summary: string;
@@ -16,13 +17,13 @@ export interface CodeArtifactDraft {
   metadata?: Record<string, unknown>;
 }
 
-export interface GlmCodingWorkerExecutionResult {
+export interface CodingWorkerExecutionResult {
   artifact: CodeArtifactDraft;
   patch: string;
   rawResponse: string;
 }
 
-export interface GlmCodingWorkerRequest {
+export interface CodingWorkerRequest {
   task: WorkerTask;
   resolvedContext: string;
   workerSessionId: string;
@@ -30,10 +31,48 @@ export interface GlmCodingWorkerRequest {
 }
 
 export interface CodingWorkerRunner {
-  runTask: (input: GlmCodingWorkerRequest) => Promise<GlmCodingWorkerExecutionResult>;
+  runTask: (input: CodingWorkerRequest) => Promise<CodingWorkerExecutionResult>;
 }
 
-export class GlmWorkerError extends Error {
+export class FallbackCodingWorkerRunner implements CodingWorkerRunner {
+  public selectedIndex = 0;
+  public readonly attempts: Array<{ fallbackIndex: number; profileId: string; outcome: "failed" | "selected"; failureType?: string }> = [];
+
+  public constructor(
+    private readonly candidates: Array<{ config: CodingWorkerModelConfig; runner: CodingWorkerRunner }>,
+    private readonly allowedTriggers: ReadonlySet<import("../../shared-schema/src/index.js").ModelFallbackTrigger>,
+  ) {
+    if (candidates.length === 0) throw new Error("FallbackCodingWorkerRunner requires candidates.");
+  }
+
+  public async runTask(input: CodingWorkerRequest): Promise<CodingWorkerExecutionResult> {
+    for (let index = 0; index < this.candidates.length; index += 1) {
+      try {
+        const result = await this.candidates[index]!.runner.runTask(input);
+        this.selectedIndex = index;
+        this.attempts.push({ fallbackIndex: index, profileId: this.candidates[index]!.config.profileId ?? "unknown", outcome: "selected" });
+        return result;
+      } catch (error) {
+        const trigger = error instanceof CodingWorkerError
+          ? error.type === "configuration_error"
+            ? "configuration"
+            : error.type === "call_timeout"
+              ? "timeout"
+              : error.type === "model_call_failed"
+                ? "provider_error"
+                : error.type === "response_parse_failed" || error.type === "artifact_validation_failed"
+                  ? "invalid_response"
+                  : undefined
+          : undefined;
+        this.attempts.push({ fallbackIndex: index, profileId: this.candidates[index]!.config.profileId ?? "unknown", outcome: "failed", failureType: trigger });
+        if (!trigger || index + 1 >= this.candidates.length || !this.allowedTriggers.has(trigger) || input.signal?.aborted) throw error;
+      }
+    }
+    throw new Error("No coding model candidate completed the task.");
+  }
+}
+
+export class CodingWorkerError extends Error {
   public readonly type: WorkerFailureType;
 
   public readonly retryable: boolean;
@@ -42,7 +81,7 @@ export class GlmWorkerError extends Error {
 
   public constructor(type: WorkerFailureType, message: string, options?: { retryable?: boolean; rawResponse?: string }) {
     super(message);
-    this.name = "GlmWorkerError";
+    this.name = "CodingWorkerError";
     this.type = type;
     this.retryable = options?.retryable ?? false;
     this.rawResponse = options?.rawResponse;
@@ -51,7 +90,7 @@ export class GlmWorkerError extends Error {
 
 function asStringArray(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
-    throw new GlmWorkerError("artifact_validation_failed", `Invalid ${fieldName} in code artifact.`, {
+    throw new CodingWorkerError("artifact_validation_failed", `Invalid ${fieldName} in code artifact.`, {
       retryable: false,
     });
   }
@@ -61,7 +100,7 @@ function asStringArray(value: unknown, fieldName: string): string[] {
 function extractTaggedBlock(raw: string, tagName: string): string {
   const match = raw.match(new RegExp(`<${tagName}>\\s*([\\s\\S]*?)\\s*</${tagName}>`, "i"));
   if (!match?.[1]) {
-    throw new GlmWorkerError("response_parse_failed", `Missing <${tagName}> block in worker response.`, {
+    throw new CodingWorkerError("response_parse_failed", `Missing <${tagName}> block in worker response.`, {
       retryable: true,
       rawResponse: raw,
     });
@@ -73,7 +112,7 @@ function parseJsonBlock(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch (error) {
-    throw new GlmWorkerError("response_parse_failed", `Failed to parse worker JSON block: ${(error as Error).message}`, {
+    throw new CodingWorkerError("response_parse_failed", `Failed to parse worker JSON block: ${(error as Error).message}`, {
       retryable: true,
       rawResponse: raw,
     });
@@ -82,7 +121,7 @@ function parseJsonBlock(raw: string): unknown {
 
 function buildSystemPrompt(): string {
   return [
-    "You are the isolated GLM-5.2 coding worker inside Deep-Mix phase 2.",
+    "You are the isolated Coding Worker inside Deep-Mix.",
     "You are not the governor.",
     "You do not have workspace write access.",
     "You must not ask to use tools or directly claim that files were edited.",
@@ -147,16 +186,16 @@ export function buildCodingWorkerTask(rawArgs: unknown): WorkerTask {
 
 export function validateCodeArtifact(artifact: CodeArtifact): CodeArtifact {
   if (artifact.kind !== "code_artifact") {
-    throw new GlmWorkerError("artifact_validation_failed", `Expected code_artifact, received ${artifact.kind}.`);
+    throw new CodingWorkerError("artifact_validation_failed", `Expected code_artifact, received ${artifact.kind}.`);
   }
   if (typeof artifact.summary !== "string" || artifact.summary.trim().length === 0) {
-    throw new GlmWorkerError("artifact_validation_failed", "Code artifact summary must be non-empty.");
+    throw new CodingWorkerError("artifact_validation_failed", "Code artifact summary must be non-empty.");
   }
   if (!/^artifact:\/\/patches\/.+\.patch$/.test(artifact.patchRef)) {
-    throw new GlmWorkerError("artifact_validation_failed", "Code artifact patchRef must point to artifact://patches/*.patch.");
+    throw new CodingWorkerError("artifact_validation_failed", "Code artifact patchRef must point to artifact://patches/*.patch.");
   }
   if (typeof artifact.confidence !== "number" || artifact.confidence < 0 || artifact.confidence > 1) {
-    throw new GlmWorkerError("artifact_validation_failed", "Code artifact confidence must be between 0 and 1.");
+    throw new CodingWorkerError("artifact_validation_failed", "Code artifact confidence must be between 0 and 1.");
   }
   artifact.changedFiles = asStringArray(artifact.changedFiles, "changedFiles");
   artifact.testCommands = asStringArray(artifact.testCommands, "testCommands");
@@ -165,7 +204,7 @@ export function validateCodeArtifact(artifact: CodeArtifact): CodeArtifact {
     artifact.notes = asStringArray(artifact.notes, "notes");
   }
   if (!artifact.metadata || typeof artifact.metadata !== "object" || Array.isArray(artifact.metadata)) {
-    throw new GlmWorkerError("artifact_validation_failed", "Code artifact metadata must be an object.");
+    throw new CodingWorkerError("artifact_validation_failed", "Code artifact metadata must be an object.");
   }
   return artifact;
 }
@@ -183,58 +222,63 @@ export function summarizeCodeArtifact(artifact: CodeArtifact): CodeArtifactSumma
   };
 }
 
-export class GlmCodingWorkerClient implements CodingWorkerRunner {
-  private readonly config: GlmCodingWorkerConfig;
+export class CodingWorkerClient implements CodingWorkerRunner {
+  private readonly config: CodingWorkerModelConfig;
 
-  public constructor(config: GlmCodingWorkerConfig) {
+  public constructor(config: CodingWorkerModelConfig, private readonly registry: ModelAdapterRegistry = createDefaultModelAdapterRegistry()) {
     this.config = config;
   }
 
-  public async runTask(input: GlmCodingWorkerRequest): Promise<GlmCodingWorkerExecutionResult> {
+  public async runTask(input: CodingWorkerRequest): Promise<CodingWorkerExecutionResult> {
     if (!this.config.apiKey) {
-      throw new GlmWorkerError("configuration_error", "Missing API key for glm_coding_worker profile.");
+      throw new CodingWorkerError("configuration_error", `Missing credential for coding profile ${this.config.profileId ?? "unknown"}.`);
     }
-
-    const response = await fetch(`${this.config.baseUrl}${this.config.endpointPath}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        "Content-Type": "application/json",
-        ...this.config.headers,
+    const profile: ResolvedModelProfile = {
+      profileId: this.config.profileId ?? "classic_coding",
+      provider: this.config.provider ?? "legacy-coding",
+      protocol: this.config.protocol ?? "openai_chat_completions",
+      adapterId: this.config.adapterId ?? "openai_compatible",
+      baseUrl: this.config.baseUrl,
+      endpointPath: this.config.endpointPath,
+      model: this.config.model,
+      capabilities: this.config.capabilities ?? {
+        textInput: true,
+        imageInput: false,
+        streaming: false,
+        nativeToolCalling: false,
+        structuredOutput: true,
+        reasoning: false,
+        contextWindow: this.config.contextWindow,
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: [
-          {
-            role: "system",
-            content: buildSystemPrompt(),
-          },
-          {
-            role: "user",
-            content: buildUserPrompt(input.task, input.resolvedContext),
-          },
-        ],
-        stream: false,
-        temperature: this.config.temperature,
-        ...this.config.requestDefaults,
-      }),
-      signal: input.signal,
-    });
-
-    if (!response.ok) {
-      throw new GlmWorkerError(
-        "response_parse_failed",
-        `GLM request failed with ${response.status}: ${(await response.text()).slice(0, 400)}`,
-        { retryable: response.status >= 500 },
-      );
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
+      allowedSlots: ["coding"],
+      apiKey: this.config.apiKey,
+      headers: this.config.headers,
+      requestDefaults: this.config.requestDefaults,
     };
-    const rawResponse = payload.choices?.[0]?.message?.content?.trim();
+    let rawResponse: string;
+    try {
+      const response = await this.registry.resolve(profile.adapterId).completeText(profile, {
+        messages: [
+          { role: "system", content: buildSystemPrompt() },
+          { role: "user", content: buildUserPrompt(input.task, input.resolvedContext) },
+        ],
+        temperature: this.config.temperature,
+        signal: input.signal,
+      });
+      rawResponse = response.content.trim();
+    } catch (error) {
+      if (error instanceof ModelAdapterError) {
+        const type: WorkerFailureType = error.failureType === "configuration"
+          ? "configuration_error"
+          : error.failureType === "timeout"
+            ? "call_timeout"
+            : "model_call_failed";
+        throw new CodingWorkerError(type, `Coding model call failed; profile=${error.profileId ?? profile.profileId}; adapter=${error.adapterId}; retryable=${error.retryable}; reason=${error.message}`, { retryable: error.retryable });
+      }
+      throw error;
+    }
     if (!rawResponse) {
-      throw new GlmWorkerError("response_parse_failed", "GLM response did not contain assistant content.", {
+      throw new CodingWorkerError("response_parse_failed", "Coding response did not contain assistant content.", {
         retryable: true,
       });
     }
@@ -257,19 +301,19 @@ export class GlmCodingWorkerClient implements CodingWorkerRunner {
     };
 
     if (!artifact.summary) {
-      throw new GlmWorkerError("artifact_validation_failed", "Worker returned an empty summary.", {
+      throw new CodingWorkerError("artifact_validation_failed", "Worker returned an empty summary.", {
         retryable: false,
         rawResponse,
       });
     }
     if (!Number.isFinite(artifact.confidence) || artifact.confidence < 0 || artifact.confidence > 1) {
-      throw new GlmWorkerError("artifact_validation_failed", "Worker confidence must be between 0 and 1.", {
+      throw new CodingWorkerError("artifact_validation_failed", "Worker confidence must be between 0 and 1.", {
         retryable: false,
         rawResponse,
       });
     }
     if (!patchBlock.startsWith("*** Begin Patch") || !patchBlock.includes("*** End Patch")) {
-      throw new GlmWorkerError("artifact_validation_failed", "Worker patch must use the apply_patch envelope.", {
+      throw new CodingWorkerError("artifact_validation_failed", "Worker patch must use the apply_patch envelope.", {
         retryable: false,
         rawResponse,
       });
@@ -282,3 +326,12 @@ export class GlmCodingWorkerClient implements CodingWorkerRunner {
     };
   }
 }
+
+/** @deprecated Classic compatibility exports. */
+export type GlmCodingWorkerExecutionResult = CodingWorkerExecutionResult;
+/** @deprecated Classic compatibility exports. */
+export type GlmCodingWorkerRequest = CodingWorkerRequest;
+/** @deprecated Classic compatibility exports. */
+export const GlmWorkerError = CodingWorkerError;
+/** @deprecated Classic compatibility exports. */
+export const GlmCodingWorkerClient = CodingWorkerClient;

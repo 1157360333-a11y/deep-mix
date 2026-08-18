@@ -1,18 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   DiagnosticReportRecord,
-  PermissionMode,
   PlanItem,
-  RouteTarget,
   SessionRecord,
   ToolProcessSession,
   ToolOutputArtifact,
   WorkerArtifactRecord,
 } from "@deep-mix/shared-schema";
-import type { DesktopSettings, DesktopSettingsPatch, WorkerStatusView } from "@shared/ipc";
+import type { WorkerStatusView } from "@shared/ipc";
 import type { InspectorPanel } from "../types";
 import { Icon, type IconName } from "./Icons";
-import { SelectMenu } from "./SelectMenu";
 import { ToolOutputArtifacts } from "./ToolOutputArtifacts";
 
 interface RightPanelProps {
@@ -25,11 +22,8 @@ interface RightPanelProps {
   processes: ToolProcessSession[];
   stoppingProcessIds: ReadonlySet<string>;
   diagnostics: DiagnosticReportRecord | null;
-  settings: DesktopSettings | null;
   busy: boolean;
   onSelectPanel: (panel: InspectorPanel) => void;
-  onUpdateSettings: (patch: DesktopSettingsPatch) => void;
-  onRevealPath: (path: string) => void;
   onStopProcess: (processSessionId: string) => void;
 }
 
@@ -37,8 +31,6 @@ const tabs: Array<{ id: InspectorPanel; label: string; icon: IconName }> = [
   { id: "context", label: "上下文", icon: "context" },
   { id: "plan", label: "计划", icon: "plan" },
   { id: "activity", label: "运行", icon: "activity" },
-  { id: "plugins", label: "插件", icon: "plugin" },
-  { id: "settings", label: "设置", icon: "settings" },
 ];
 
 function formatTokens(value?: number): string {
@@ -182,114 +174,10 @@ function ActivityPanel({ workers, artifacts, toolOutputArtifacts, processes, sto
           <div className="process-card__footer"><span>{process.interactionMode === "pty" ? "PTY" : process.interactionMode === "pipe" ? "STDIO" : "后台"}</span><span>{process.totalOutputChars.toLocaleString()} chars</span>{canStop && <button aria-label={`停止进程 ${process.processSessionId}`} disabled={stopping} onClick={() => onStopProcess(process.processSessionId)}><Icon name="stop" size={10} />{stopping ? "停止中" : "停止"}</button>}</div>
         </article>;
       })}</div></section>}
-      {workers.length > 0 && <section className="inspector-section"><div className="inspector-section__title"><span>Workers</span><small>{workers.length}</small></div><div className="runtime-list">{workers.map((worker) => <div className="runtime-row" key={worker.workerSessionId}><span className={`runtime-state runtime-state--${worker.status}`} /><div><strong>{worker.workerType}</strong><small>{worker.objective}</small></div><em>{worker.status}</em></div>)}</div></section>}
+      {workers.length > 0 && <section className="inspector-section"><div className="inspector-section__title"><span>Workers</span><small>{workers.length}</small></div><div className="runtime-list">{workers.map((worker) => <div className="runtime-row" key={worker.workerSessionId}><span className={`runtime-state runtime-state--${worker.status}`} /><div><strong>{worker.modelAssignment ? `${worker.modelAssignment.slot} · ${worker.modelAssignment.provider}/${worker.modelAssignment.model}` : worker.workerType}</strong><small>{worker.objective}</small></div><em>{worker.status}</em></div>)}</div></section>}
       {entries.length > 0 && <section className="inspector-section"><div className="inspector-section__title"><span>诊断</span><small>{entries.length}</small></div><div className="runtime-list">{entries.map((entry, index) => <div className="runtime-row" key={`${entry.kind}-${index}`}><span className={`runtime-state runtime-state--${entry.status}`} /><div><strong>{entry.kind}</strong><small>{entry.summary}</small></div><em>{entry.status}</em></div>)}</div></section>}
       {toolOutputArtifacts.length > 0 && <section className="inspector-section"><div className="inspector-section__title"><span>工具产物</span><small>{toolOutputArtifacts.length}</small></div><ToolOutputArtifacts artifacts={toolOutputArtifacts} compact /></section>}
       {artifacts.length > 0 && <section className="inspector-section"><div className="inspector-section__title"><span>Worker 产物</span><small>{artifacts.length}</small></div><div className="artifact-list">{artifacts.map((artifact) => <details key={artifact.artifactId}><summary><Icon name="file" size={14} /><span>{artifact.summary.kind === "code_artifact" ? "代码产物" : "视觉产物"}</span><Icon name="chevron-down" size={13} /></summary><p>{artifact.summary.summary}</p></details>)}</div></section>}
-    </div>
-  );
-}
-
-function PluginsPanel({ settings, busy, onUpdate }: { settings: DesktopSettings | null; busy: boolean; onUpdate: RightPanelProps["onUpdateSettings"] }) {
-  const [query, setQuery] = useState("");
-  const filtered = useMemo(() => settings?.extensions.filter((entry) => `${entry.name} ${entry.description}`.toLowerCase().includes(query.toLowerCase())) ?? [], [query, settings]);
-  if (!settings) return <EmptyPanel icon="plugin" title="正在发现插件" detail="扫描项目和用户扩展目录…" />;
-  return (
-    <div className="inspector-content">
-      <label className="inspector-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索技能、工作流或 MCP" /></label>
-      <div className="plugin-list">
-        {filtered.map((extension) => (
-          <div className="plugin-row" key={extension.id}>
-            <span className={`plugin-row__icon plugin-row__icon--${extension.kind}`}><Icon name={extension.kind === "skill" ? "spark" : extension.kind === "workflow" ? "plan" : "plugin"} size={16} /></span>
-            <div><strong>{extension.name}</strong><p>{extension.description}</p><small>{extension.kind.toUpperCase()} · {extension.source ?? "local"}</small></div>
-            {extension.kind === "skill" ? <button aria-label={`${extension.enabled ? "停用" : "启用"} ${extension.name}`} className={`toggle${extension.enabled ? " toggle--on" : ""}`} disabled={busy} onClick={() => onUpdate({ enabledSkills: { [extension.name]: !extension.enabled } })}><span /></button> : <span className={`state-label state-label--${extension.state}`}>{extension.state === "ready" ? "就绪" : extension.state === "disabled" ? "停用" : "错误"}</span>}
-          </div>
-        ))}
-        {!filtered.length && <EmptyPanel icon="search" title="没有匹配项" detail="尝试搜索其它名称。" />}
-      </div>
-    </div>
-  );
-}
-
-function SettingsPanel({ settings, busy, onUpdate, onRevealPath }: { settings: DesktopSettings | null; busy: boolean; onUpdate: RightPanelProps["onUpdateSettings"]; onRevealPath: (path: string) => void }) {
-  if (!settings) return <EmptyPanel icon="settings" title="正在读取设置" detail="从工作区配置加载中…" />;
-  return (
-    <div className="inspector-content settings-sections">
-      <section className="settings-section settings-section--reply-style">
-        <div className="inspector-section__title"><span>回复</span><small>应用于总结与日常回答</small></div>
-        <div className="setting-row">
-          <span><strong>回复风格</strong><small>控制默认语气与表达方式</small></span>
-          <SelectMenu
-            ariaLabel="回复风格"
-            size="regular"
-            disabled={busy}
-            value={settings.replyStyle}
-            options={[
-              { value: "pragmatic", label: "务实", description: "冷静、严谨", icon: "activity", tone: "accent" },
-              { value: "friendly", label: "亲和", description: "温暖、协作", icon: "spark" },
-            ]}
-            onChange={(value) => onUpdate({ replyStyle: value as DesktopSettings["replyStyle"] })}
-          />
-        </div>
-      </section>
-      <section className="settings-section">
-        <div className="inspector-section__title"><span>执行</span></div>
-        <div className="setting-row">
-          <span><strong>权限模式</strong><small>控制写入与命令审批</small></span>
-          <SelectMenu
-            ariaLabel="权限模式"
-            size="regular"
-            disabled={busy}
-            value={settings.permissionMode}
-            options={[
-              { value: "plan", label: "只读规划", description: "不允许修改文件", icon: "plan" },
-              { value: "edit", label: "工作区写入", description: "写入前仍遵循权限层", icon: "edit" },
-              { value: "auto", label: "按需审批", description: "危险操作由你确认", icon: "shield", tone: "accent" },
-              { value: "danger-full-access", label: "完全访问", description: "允许所有工作区操作", icon: "activity", tone: "warning" },
-            ]}
-            onChange={(value) => onUpdate({ permissionMode: value as PermissionMode })}
-          />
-        </div>
-        <div className="setting-row">
-          <span><strong>模型路由</strong><small>默认由任务自动选择</small></span>
-          <SelectMenu
-            ariaLabel="模型路由"
-            size="regular"
-            disabled={busy}
-            value={settings.routeOverride ?? "auto"}
-            options={[
-              { value: "auto", label: "自动", icon: "spark" },
-              { value: "ds_direct", label: "DeepSeek", icon: "activity" },
-              { value: "glm_coding", label: "GLM", icon: "code" },
-              { value: "kimi_vision", label: "Kimi", icon: "image" },
-            ]}
-            onChange={(value) => onUpdate({ routeOverride: value === "auto" ? null : value as RouteTarget })}
-          />
-        </div>
-        <div className="setting-row">
-          <span><strong>思考深度</strong><small>越深越适合复杂任务</small></span>
-          <SelectMenu
-            ariaLabel="思考深度"
-            size="regular"
-            variant="reasoning"
-            disabled={busy}
-            value={settings.reasoningEffort}
-            options={[
-              { value: "low", label: "快速", description: "单轨响应", depthLevel: 1 },
-              { value: "medium", label: "标准", description: "双轨校验", depthLevel: 2 },
-              { value: "high", label: "深度", description: "三轨汇聚", depthLevel: 3, tone: "accent" },
-            ]}
-            onChange={(value) => onUpdate({ reasoningEffort: value })}
-          />
-        </div>
-      </section>
-      <section className="settings-section"><div className="inspector-section__title"><span>模型配置</span><small>不显示密钥</small></div>
-        {Object.entries(settings.profiles).map(([name, state]) => <div className="profile-row" key={name}><span className={state.hasKey ? "profile-ready" : "profile-missing"} /><div><strong>{name}</strong><small>{state.hasKey ? "已连接" : state.exists ? "缺少密钥" : "未配置"}</small></div></div>)}
-      </section>
-      <section className="settings-section"><div className="inspector-section__title"><span>运行环境</span><small>{settings.capabilities.filter((entry) => entry.available).length}/{settings.capabilities.length}</small></div>
-        <div className="capability-cloud">{settings.capabilities.map((entry) => <span className={entry.available ? "" : "is-missing"} key={entry.name}><i />{entry.name}</span>)}</div>
-      </section>
-      <section className="settings-section"><div className="inspector-section__title"><span>工作区</span></div><button className="path-button" onClick={() => onRevealPath(settings.workspaceRoot)}><Icon name="folder" size={15} /><span>{settings.workspaceRoot}</span><Icon name="external" size={14} /></button></section>
     </div>
   );
 }
@@ -305,8 +193,6 @@ export function RightPanel(props: RightPanelProps) {
         {props.activePanel === "context" && <ContextPanel session={props.session} />}
         {props.activePanel === "plan" && <PlanPanel items={props.planItems} />}
         {props.activePanel === "activity" && <ActivityPanel workers={props.workers} artifacts={props.artifacts} toolOutputArtifacts={props.toolOutputArtifacts} processes={props.processes} stoppingProcessIds={props.stoppingProcessIds} diagnostics={props.diagnostics} onStopProcess={props.onStopProcess} />}
-        {props.activePanel === "plugins" && <PluginsPanel settings={props.settings} busy={props.busy} onUpdate={props.onUpdateSettings} />}
-        {props.activePanel === "settings" && <SettingsPanel settings={props.settings} busy={props.busy} onUpdate={props.onUpdateSettings} onRevealPath={props.onRevealPath} />}
       </div>
     </aside>
   );

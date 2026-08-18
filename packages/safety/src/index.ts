@@ -10,6 +10,7 @@ import type {
   ToolExecutionOrigin,
   ToolPermissionCategory,
 } from "../../shared-schema/src/index.js";
+import { resolveWorkspaceStateDirectory } from "../../state-location/src/index.js";
 
 export interface PermissionPolicy {
   version: 1;
@@ -194,7 +195,7 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
 }
 
 export async function loadPermissionPolicy(workspaceRoot: string): Promise<PermissionPolicy> {
-  const policyPath = path.join(workspaceRoot, ".deep-mix", "permission-policy.json");
+  const policyPath = path.join(resolveWorkspaceStateDirectory(workspaceRoot), "permission-policy.json");
   try {
     const content = await fs.readFile(policyPath, "utf8");
     const configured = JSON.parse(content) as PermissionPolicy;

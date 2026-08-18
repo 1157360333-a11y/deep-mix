@@ -12,8 +12,9 @@
 
 ## Runtime Rules
 
-- `DeepSeek` remains the only governor and supervisor.
-- `GLM-5.2` and `Kimi` stay isolated workers and do not write workspace files directly.
+- The configured `governor` model slot remains the only governor and supervisor.
+- The configured `coding` and `vision` slots stay isolated workers and do not write workspace files directly.
+- `DeepSeek + GLM + Kimi` is the `classic` compatibility preset, not a runtime role contract.
 - Final file writes, shell commands, tests, git actions, and MCP calls must go through `Tool Runtime + Permission Layer`.
 - New reusable process guidance belongs in a `SKILL.md`, not in this file.
 - New deterministic orchestration belongs in a workflow file, not in this file.
@@ -28,4 +29,4 @@
 ## Protected Paths
 
 - Never edit `.deep-mix/api-key-library/` through normal runtime write tools.
-- Worker artifacts, worker sessions, and checkpoints stay under `.deep-mix/` state directories.
+- Worker artifacts, worker sessions, and checkpoints stay under user-level `.deep-mix/workspaces/<workspace-id>/` state directories by default.

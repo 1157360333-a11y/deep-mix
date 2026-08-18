@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionStore } from "../../../../packages/persistence/src/index.js";
 import { ToolRuntime } from "../../../../packages/tool-runtime/src/index.js";
+import { resolveLegacyDesktopAttachmentReference } from "../../../../packages/state-location/src/index.js";
 import {
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   importDocumentAttachment,
@@ -21,6 +22,12 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   temporaryRoots.push(directory);
   return directory;
+}
+
+function importedPath(workspaceRoot: string, relativePath: string): string {
+  const resolved = resolveLegacyDesktopAttachmentReference(workspaceRoot, relativePath);
+  if (!resolved) throw new Error(`Invalid imported attachment reference: ${relativePath}`);
+  return resolved;
 }
 
 afterEach(async () => {
@@ -46,7 +53,7 @@ describe("desktop document attachment import", () => {
       mimeType: "application/pdf",
     });
     expect(second.name).toBe("report-2.pdf");
-    expect(await fs.readFile(path.join(workspaceRoot, first.relativePath), "utf8")).toBe("%PDF fixture");
+    expect(await fs.readFile(importedPath(workspaceRoot, first.relativePath), "utf8")).toBe("%PDF fixture");
   });
 
   it.each([
@@ -70,7 +77,7 @@ describe("desktop document attachment import", () => {
     });
     expect(imported.ref).toBe(`file://${imported.relativePath}`);
     expect(path.isAbsolute(imported.relativePath)).toBe(false);
-    expect(await fs.readFile(path.join(workspaceRoot, imported.relativePath))).toEqual(contents);
+    expect(await fs.readFile(importedPath(workspaceRoot, imported.relativePath))).toEqual(contents);
   });
 
   it("publishes an exact MIME allowlist for every Phase 20 attachment extension", () => {
@@ -153,7 +160,7 @@ describe("desktop document attachment import", () => {
       maxChars: 2_000,
     }, session.sessionId);
 
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     expect(result.output).toContain("Desktop attachment PDF is readable");
     expect(result.structuredContent).toMatchObject({
       format: "pdf",
@@ -188,7 +195,7 @@ describe("desktop document attachment import", () => {
       maxChars: 2_000,
     }, session.sessionId);
 
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     expect(result.output).toContain("Desktop attachment DOCX is readable");
     expect(result.structuredContent).toMatchObject({ format: "docx", truncated: false });
     expect(result.artifacts).toEqual(expect.arrayContaining([

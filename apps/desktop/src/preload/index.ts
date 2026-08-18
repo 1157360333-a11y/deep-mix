@@ -3,7 +3,6 @@ import type {
   ApprovalRecord,
   DiagnosticReportRecord,
   PlanUpdateRecord,
-  RouteTarget,
   SessionRecord,
   ToolBatchStart,
   ToolCall,
@@ -14,6 +13,7 @@ import type {
 import type {
   AttachmentDescriptor,
   DesktopUserInputResponseInput,
+  DesktopModelProfileSaveInput,
   DesktopSettingsPatch,
   SessionMutationInput,
   WorkerStatusView,
@@ -34,7 +34,6 @@ const runtimeApi = {
     sessionId?: string;
     workspaceRoot?: string;
     prompt: string;
-    routeOverride?: RouteTarget;
     attachments?: AttachmentDescriptor[];
   }) => ipcRenderer.invoke("deep-mix:sendPrompt", {
     ...input,
@@ -61,6 +60,8 @@ const runtimeApi = {
     ipcRenderer.invoke("deep-mix:respondToUserInput", input),
   getSettings: (workspaceRoot?: string) => ipcRenderer.invoke("deep-mix:getSettings", workspaceRoot),
   updateSettings: (patch: DesktopSettingsPatch, workspaceRoot?: string) => ipcRenderer.invoke("deep-mix:updateSettings", patch, workspaceRoot),
+  saveModelProfile: (input: DesktopModelProfileSaveInput, workspaceRoot?: string) => ipcRenderer.invoke("deep-mix:saveModelProfile", input, workspaceRoot),
+  probeModel: (profileId: string, workspaceRoot?: string) => ipcRenderer.invoke("deep-mix:probeModel", profileId, workspaceRoot),
   chooseAttachments: (workspaceRoot?: string) => ipcRenderer.invoke("deep-mix:chooseAttachments", workspaceRoot),
   describeDroppedFiles: (paths: string[], workspaceRoot?: string) =>
     ipcRenderer.invoke("deep-mix:describeDroppedFiles", paths, workspaceRoot),

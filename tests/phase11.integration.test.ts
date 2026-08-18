@@ -466,7 +466,7 @@ describe("phase 11 message history legality and tool-call integrity", () => {
       "export.js",
       "FileSaver.min.js",
       "html-docx.js",
-      "product_feedback.js",
+      "statau_feedback.js",
       "theme-switcher.js",
       "xlsx.full.min.js",
     ];

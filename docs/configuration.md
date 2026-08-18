@@ -4,21 +4,22 @@ Deep-Mix has three configuration layers: provider profiles, runtime settings, an
 
 ## Provider profiles
 
-Provider connections are defined in:
+Provider connections are stored outside ordinary settings. The preferred locations are:
 
 ```text
-<workspace>/.deep-mix/api-key-library/profiles.local.json
+~/.deep-mix/workspaces/<workspace-id>/api-key-library/profiles.local.json
+~/.deep-mix/api-key-library/profiles.local.json
 ```
 
-The runtime searches the selected workspace first, then an optional root configured by `DEEP_MIX_API_KEY_LIBRARY_ROOT`, then `.deep-mix/api-key-library/profiles.local.json` in ancestors of the current launch directory. Keep the search behavior simple in production: place one protected profile file in the workspace you launch from, or set an explicit library root.
+The first path is the workspace-scoped user-state location used by Desktop. `DEEP_MIX_HOME` changes the `~/.deep-mix` root. For compatibility, the runtime can still read `<workspace>/.deep-mix/api-key-library/profiles.local.json`, `DEEP_MIX_API_KEY_LIBRARY_ROOT`, and ancestor libraries, but newly saved credentials go to user-level state. Normal tools never receive the secret-bearing profile DTO.
 
 The default profile names are:
 
-| Name | Required role | Purpose |
+| Name | Classic slot | Purpose |
 | --- | --- | --- |
-| `deepseek_governor` | `governor` | Required main conversation and supervision model |
-| `glm_coding_worker` | `coding_worker` | Optional complex coding specialist |
-| `kimi_vision` | `vision_worker` | Optional image and screenshot specialist |
+| `deepseek_governor` | `governor` | Classic main conversation and supervision model |
+| `glm_coding_worker` | `coding` | Classic complex coding specialist |
+| `kimi_vision` | `vision` | Classic image and screenshot specialist |
 
 Start from [`examples/profiles.example.json`](../examples/profiles.example.json). The shape is validated by [`docs/contracts/api-key-library.schema.json`](contracts/api-key-library.schema.json).
 
@@ -26,8 +27,10 @@ Important fields:
 
 | Field | Meaning |
 | --- | --- |
-| `provider` | `deepseek`, `glm`, or `kimi` |
-| `role` | Must match the profile's runtime role |
+| `provider` | Provider identifier; not restricted to the classic providers |
+| `protocol` / `adapter` | Request protocol and adapter implementation |
+| `allowedSlots` | Slots this profile may serve: `governor`, `coding`, and/or `vision` |
+| `capabilities` | Explicit text/image, streaming, tool-calling, structured-output, reasoning, and context-window claims |
 | `apiKeyEnvName` | Preferred environment variable containing the secret |
 | `apiKey` | Inline local secret; supported but discouraged |
 | `baseUrl` | Provider API origin, without the chat path |
@@ -40,15 +43,27 @@ Environment-referenced example:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "revision": 0,
   "profiles": {
     "deepseek_governor": {
       "provider": "deepseek",
-      "role": "governor",
+      "protocol": "openai_chat_completions",
+      "adapter": "deepseek_compat",
+      "allowedSlots": ["governor"],
+      "capabilities": {
+        "textInput": true,
+        "imageInput": false,
+        "streaming": true,
+        "nativeToolCalling": true,
+        "structuredOutput": true,
+        "reasoning": true,
+        "contextWindow": 128000
+      },
       "apiKeyEnvName": "DEEPSEEK_API_KEY",
       "baseUrl": "https://api.deepseek.com",
       "chatPath": "/chat/completions",
-      "model": "deepseek-v4-flash",
+      "model": "replace-with-a-current-compatible-model",
       "headers": {
         "Content-Type": "application/json"
       },
@@ -68,7 +83,7 @@ Settings are deep-merged in this order:
 2. `<workspace>/.deep-mix/settings.json`
 3. CLI flags for launch-level values
 
-Project settings override matching user settings. A project file can therefore change one nested value without repeating the entire user configuration.
+Project settings override matching user settings. Version 2 settings also carry a monotonic `revision`; writes use compare-and-swap so concurrent Desktop updates fail instead of silently overwriting one another. Version 1 files are readable migration inputs and are never rewritten without an explicit save.
 
 Copy [`examples/settings.example.json`](../examples/settings.example.json) to either settings location. Do not place API keys in a committed project settings file.
 
@@ -76,34 +91,26 @@ Copy [`examples/settings.example.json`](../examples/settings.example.json) to ei
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "revision": 0,
   "defaults": {
     "permissionMode": "auto",
-    "routeOverride": "ds_direct"
+    "routeOverride": "governor_direct"
   }
 }
 ```
 
-Valid permission modes are `plan`, `edit`, `auto`, and `danger-full-access`. Valid route overrides are `ds_direct`, `glm_coding`, and `kimi_vision`. A CLI `--mode` or `--route` value wins for that launch.
+Valid permission modes are `plan`, `edit`, `auto`, and `danger-full-access`. Public route targets are `governor_direct`, `coding_worker`, and `vision_worker`; legacy route values remain readable. A CLI `--mode` or `--route` value wins for that launch.
 
-### Governor settings
+### Model slots
 
-The `governor` object supports:
+The `models` object selects either the `classic` or `custom` preset and binds three slots:
 
-- `profile`, `model`, and `stream`;
-- `contextWindow`, soft/compact/reserve budgets, and summary/tail limits;
-- `timeoutMs`, `maxRetries`, and `temperature`;
-- `thinkingMode`: `disabled`, `enabled`, or `adaptive`;
-- `reasoningEffort`: `low`, `medium`, `high`, or `not_applicable`;
-- `replyStyle`: `pragmatic` or `friendly`.
+- `governor`: the only conversation owner and supervisor; requires text, streaming, and native tool calling by default;
+- `coding`: isolated structured-output worker for bounded coding tasks;
+- `vision`: isolated structured-output worker that must also support image input.
 
-Provider-specific environment variables such as `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_TIMEOUT_MS`, `DEEPSEEK_THINKING_MODE`, and `DEEPSEEK_REASONING_EFFORT` override the corresponding governor values where supported.
-
-### Worker settings
-
-`codingWorker` supports profile/model selection, context and timeout limits, retry/temperature settings, and maximum context files/characters. `visionWorker` supports profile/model selection, context/timeout limits, and image byte/dimension normalization limits.
-
-Explicit profile environment variables are `DEEPSEEK_GOVERNOR_PROFILE`, `GLM_CODING_WORKER_PROFILE`, and `KIMI_VISION_WORKER_PROFILE`.
+Each slot has a primary profile, an ordered fallback list, an explicit fallback policy, optional parameters, and capability requirements. Persisted model overrides are snapshot with every turn/worker dispatch so historical records remain truthful after settings change. Legacy `governor`, `codingWorker`, and `visionWorker` fields and classic profile environment variables are migration-only compatibility inputs.
 
 ### Web search
 
@@ -180,11 +187,11 @@ External embeddings require an explicit enabled configuration, endpoint, allowed
 
 Project MCP configuration lives in `.deep-mix/mcp/servers.json`. A safe example is available at [`examples/mcp/servers.example.json`](../examples/mcp/servers.example.json).
 
-v1.0.0 includes GitHub public-read and local Playwright-style adapters. An enabled server still remains subject to runtime tool selection and permission checks. MCP configuration must not contain reusable secrets.
+v1.1.0 includes GitHub public-read and local Playwright-style adapters. An enabled server still remains subject to runtime tool selection and permission checks. MCP configuration must not contain reusable secrets.
 
 ## Target-workspace ignore rule
 
-Deep-Mix writes local state inside the selected target workspace. If that repository does not already ignore it, add at least:
+Deep-Mix writes runtime state to `~/.deep-mix/workspaces/<workspace-id>/` by default and does not create `.deep-mix/` in an ordinary target repository. A project may still intentionally provide explicit settings, Skills, Workflows, MCP configuration, or a legacy profile under `.deep-mix/`; if it does, ignore all non-public state by default:
 
 ```gitignore
 .deep-mix/

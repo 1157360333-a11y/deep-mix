@@ -118,9 +118,10 @@ describe("desktop session management", () => {
       runtime.listMcpServerStatuses(),
     ]);
 
-    const stateDirectory = path.join(workspace, ".deep-mix");
+    const stateDirectory = new SessionStore(workspace).paths.stateDir;
     const capabilities = JSON.parse(await readFile(path.join(stateDirectory, "runtime-capabilities.json"), "utf8")) as { checkedAt?: string };
     expect(capabilities.checkedAt).toBeTruthy();
     expect((await readdir(stateDirectory)).filter((name) => name.includes("runtime-capabilities.json.") && name.endsWith(".tmp"))).toEqual([]);
+    await expect(access(path.join(workspace, ".deep-mix"))).rejects.toThrow();
   });
 });

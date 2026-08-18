@@ -350,8 +350,8 @@ describe("phase 12 CLI TUI productization", () => {
   it("renders a compact brand shell with a fixed input box and a message-first welcome state", () => {
     const state = createInitialTerminalTuiState();
     state.header = {
-      version: "1.0.0",
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      version: "0.1.0",
+      workspaceRoot: "C:\\Users\\86132\\Desktop\\deepcode",
       permissionMode: "auto",
       profiles: {
         deepseek_governor: { exists: true, hasKey: true },
@@ -394,8 +394,8 @@ describe("phase 12 CLI TUI productization", () => {
   it("collapses tool activity into a compact thinking state and keeps approval visible near the input", () => {
     const state = createInitialTerminalTuiState();
     state.header = {
-      version: "1.0.0",
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      version: "0.1.0",
+      workspaceRoot: "C:\\Users\\86132\\Desktop\\deepcode",
       permissionMode: "auto",
       profiles: {
         deepseek_governor: { exists: true, hasKey: true },
@@ -601,8 +601,8 @@ describe("phase 12 CLI TUI productization", () => {
   it("supports internal message scrollback so long conversations stay reviewable", () => {
     const state = createInitialTerminalTuiState();
     state.header = {
-      version: "1.0.0",
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      version: "0.1.0",
+      workspaceRoot: "C:\\Users\\86132\\Desktop\\deepcode",
       permissionMode: "auto",
       profiles: {
         deepseek_governor: { exists: true, hasKey: true },
@@ -630,8 +630,8 @@ describe("phase 12 CLI TUI productization", () => {
   it("renders assistant markdown into cleaner terminal text instead of raw markdown syntax", () => {
     const state = createInitialTerminalTuiState();
     state.header = {
-      version: "1.0.0",
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      version: "0.1.0",
+      workspaceRoot: "C:\\Users\\86132\\Desktop\\deepcode",
       permissionMode: "auto",
       profiles: {
         deepseek_governor: { exists: true, hasKey: true },

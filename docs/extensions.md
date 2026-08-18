@@ -59,7 +59,7 @@ Workflow arguments are not trusted code. The named tool still performs schema va
 
 ## MCP
 
-MCP represents external or live systems. v1.0.0 has built-in configuration shapes for GitHub public-read operations and a Playwright-style browser adapter. Server status and tool descriptors are dynamically injected into the runtime rather than mixed with static Skill content.
+MCP represents external or live systems. v1.1.0 has built-in configuration shapes for GitHub public-read operations and a Playwright-style browser adapter. Server status and tool descriptors are dynamically injected into the runtime rather than mixed with static Skill content.
 
 Copy [`examples/mcp/servers.example.json`](../examples/mcp/servers.example.json) to `.deep-mix/mcp/servers.json`, then inspect:
 

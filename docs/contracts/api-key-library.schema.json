@@ -6,73 +6,50 @@
   "additionalProperties": false,
   "required": ["version", "profiles"],
   "properties": {
-    "version": {
-      "type": "integer",
-      "minimum": 1
-    },
+    "version": { "type": "integer", "enum": [1, 2] },
+    "revision": { "type": "integer", "minimum": 0 },
     "profiles": {
       "type": "object",
       "minProperties": 1,
-      "additionalProperties": {
-        "$ref": "#/$defs/profile"
-      }
+      "additionalProperties": { "$ref": "#/$defs/profile" }
     }
   },
   "$defs": {
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["textInput", "imageInput", "streaming", "nativeToolCalling", "structuredOutput", "reasoning", "contextWindow"],
+      "properties": {
+        "textInput": { "type": "boolean" },
+        "imageInput": { "type": "boolean" },
+        "streaming": { "type": "boolean" },
+        "nativeToolCalling": { "type": "boolean" },
+        "structuredOutput": { "type": "boolean" },
+        "reasoning": { "type": "boolean" },
+        "contextWindow": { "type": "integer", "minimum": 1 }
+      }
+    },
     "profile": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "provider",
-        "role",
-        "baseUrl",
-        "chatPath",
-        "model",
-        "headers",
-        "requestDefaults"
-      ],
+      "required": ["provider", "baseUrl", "chatPath", "model"],
       "properties": {
-        "provider": {
-          "type": "string",
-          "enum": ["deepseek", "glm", "kimi"]
-        },
-        "role": {
-          "type": "string",
-          "enum": ["governor", "coding_worker", "vision_worker"]
-        },
-        "apiKey": {
-          "type": "string"
-        },
-        "apiKeyEnvName": {
-          "type": "string"
-        },
-        "baseUrl": {
-          "type": "string",
-          "minLength": 1
-        },
-        "chatPath": {
-          "type": "string",
-          "minLength": 1
-        },
-        "model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "supportsMultimodalInput": {
-          "type": "boolean"
-        },
-        "headers": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "requestDefaults": {
-          "type": "object"
-        },
-        "notes": {
-          "type": "string"
-        }
+        "displayName": { "type": "string" },
+        "provider": { "type": "string", "minLength": 1 },
+        "protocol": { "type": "string", "enum": ["openai_chat_completions"] },
+        "adapter": { "type": "string", "minLength": 1 },
+        "allowedSlots": { "type": "array", "uniqueItems": true, "items": { "type": "string", "enum": ["governor", "coding", "vision"] } },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "role": { "type": "string", "enum": ["governor", "coding_worker", "vision_worker"], "description": "Legacy compatibility hint." },
+        "apiKey": { "type": "string" },
+        "apiKeyEnvName": { "type": "string" },
+        "baseUrl": { "type": "string", "minLength": 1 },
+        "chatPath": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "supportsMultimodalInput": { "type": "boolean" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "requestDefaults": { "type": "object" },
+        "notes": { "type": "string" }
       }
     }
   }

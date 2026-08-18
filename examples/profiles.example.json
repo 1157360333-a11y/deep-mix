@@ -1,47 +1,48 @@
 {
-  "version": 1,
+  "version": 2,
+  "revision": 0,
   "profiles": {
     "deepseek_governor": {
+      "displayName": "DeepSeek Governor",
       "provider": "deepseek",
-      "role": "governor",
+      "protocol": "openai_chat_completions",
+      "adapter": "deepseek_compat",
+      "allowedSlots": ["governor"],
+      "capabilities": { "textInput": true, "imageInput": false, "streaming": true, "nativeToolCalling": true, "structuredOutput": true, "reasoning": true, "contextWindow": 128000 },
       "apiKeyEnvName": "DEEPSEEK_API_KEY",
       "baseUrl": "https://api.deepseek.com",
       "chatPath": "/chat/completions",
-      "model": "deepseek-v4-flash",
-      "supportsMultimodalInput": false,
-      "headers": {
-        "Content-Type": "application/json"
-      },
-      "requestDefaults": {},
-      "notes": "Required. Confirm the current model name in the provider documentation."
+      "model": "replace-with-a-current-compatible-model",
+      "headers": { "Content-Type": "application/json" },
+      "requestDefaults": {}
     },
     "glm_coding_worker": {
+      "displayName": "Coding Worker",
       "provider": "glm",
-      "role": "coding_worker",
+      "protocol": "openai_chat_completions",
+      "adapter": "glm_compat",
+      "allowedSlots": ["coding"],
+      "capabilities": { "textInput": true, "imageInput": false, "streaming": false, "nativeToolCalling": false, "structuredOutput": true, "reasoning": false, "contextWindow": 128000 },
       "apiKeyEnvName": "GLM_API_KEY",
       "baseUrl": "https://api.example.invalid/v1",
       "chatPath": "/chat/completions",
-      "model": "replace-with-your-glm-model",
-      "supportsMultimodalInput": false,
-      "headers": {
-        "Content-Type": "application/json"
-      },
-      "requestDefaults": {},
-      "notes": "Optional worker. Replace the endpoint and model before forcing glm_coding."
+      "model": "replace-with-your-coding-model",
+      "headers": { "Content-Type": "application/json" },
+      "requestDefaults": {}
     },
     "kimi_vision": {
+      "displayName": "Vision Worker",
       "provider": "kimi",
-      "role": "vision_worker",
+      "protocol": "openai_chat_completions",
+      "adapter": "kimi_compat",
+      "allowedSlots": ["vision"],
+      "capabilities": { "textInput": true, "imageInput": true, "streaming": false, "nativeToolCalling": false, "structuredOutput": true, "reasoning": false, "contextWindow": 256000 },
       "apiKeyEnvName": "KIMI_API_KEY",
       "baseUrl": "https://api.example.invalid/v1",
       "chatPath": "/chat/completions",
-      "model": "replace-with-your-kimi-vision-model",
-      "supportsMultimodalInput": true,
-      "headers": {
-        "Content-Type": "application/json"
-      },
-      "requestDefaults": {},
-      "notes": "Optional worker. Replace the endpoint and model before forcing kimi_vision."
+      "model": "replace-with-your-vision-model",
+      "headers": { "Content-Type": "application/json" },
+      "requestDefaults": {}
     }
   }
 }

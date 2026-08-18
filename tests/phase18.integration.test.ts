@@ -892,7 +892,7 @@ describe("phase 18 local Git tools", () => {
     expect(escaped.structuredContent).toMatchObject({ error: expect.any(Object) });
   });
 
-  it("uses the default managed worktree root when no custom root is configured", async () => {
+  it("uses the external managed worktree root when no custom root is configured", async () => {
     const fixture = await createGitFixture({ repositoryName: "default worktree root repo" });
     const runtime = createRuntime(fixture, "danger-full-access", {}, ["main", "master"], null);
     const relativePath = ".deep-mix/worktrees/default topic";
@@ -910,15 +910,17 @@ describe("phase 18 local Git tools", () => {
     );
     expect(created.success, created.output).toBe(true);
     expect(operation(created)).toMatchObject({ action: "create", status: "completed" });
-    expect(await fs.readFile(path.join(fixture.root, relativePath, "tracked.txt"), "utf8")).toBe("base line\n");
+    const physicalWorktreePath = path.join(fixture.sessionStore.paths.worktreesDir, "default topic");
+    expect(await fs.readFile(path.join(physicalWorktreePath, "tracked.txt"), "utf8")).toBe("base line\n");
+    await expect(fs.access(path.join(fixture.root, ".deep-mix"))).rejects.toThrow();
 
     const removed = await runtime.executeManualTool(
       "git_worktree",
       { action: "remove", cwd: fixture.repoCwd, path: relativePath },
       fixture.sessionId,
     );
-    expect(removed.success).toBe(true);
-    await expect(fs.access(path.join(fixture.root, relativePath))).rejects.toThrow();
+    expect(removed.success, removed.output).toBe(true);
+    await expect(fs.access(physicalWorktreePath)).rejects.toThrow();
   });
 
   it("refuses to materialize or remove a worktree tree containing protected runtime paths", async () => {

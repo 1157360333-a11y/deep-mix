@@ -3,7 +3,9 @@ export { DeepSeekClient } from "./deepseek-client.js";
 export { formatReplyStyleRules, PromptCompiler } from "./prompt-compiler.js";
 export {
   buildSessionTitleMessages,
+  createFallbackSessionTitle,
   normalizeGeneratedSessionTitle,
+  selectFirstTurnTitleMessages,
   SESSION_TITLE_SYSTEM_PROMPT,
 } from "./session-title.js";
 export {

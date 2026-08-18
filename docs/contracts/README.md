@@ -1,6 +1,6 @@
 # Runtime contracts
 
-This directory publishes the principal cross-component contracts frozen for Deep-Mix v1.0.0.
+This directory publishes the principal cross-component contracts used by Deep-Mix v1.1.0. TypeScript runtime schemas remain the executable source of truth.
 
 - `worker-task.schema.json`: bounded task sent to a specialist worker
 - `worker-artifact.schema.json`: structured worker result and artifact references

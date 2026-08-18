@@ -70,18 +70,6 @@ async function createFixtureWorkspace(): Promise<string> {
       {
         version: 1,
         profiles: {
-          deepseek_governor: {
-            provider: "deepseek",
-            role: "governor",
-            apiKey: "fake-local-key",
-            baseUrl: "https://example.invalid",
-            chatPath: "/chat/completions",
-            model: "deepseek-chat",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            requestDefaults: {},
-          },
           glm_coding_worker: {
             provider: "glm",
             role: "coding_worker",

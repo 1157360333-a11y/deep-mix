@@ -62,7 +62,7 @@ Before provider requests, the governor validates tool-call history and repairs o
 
 ## Managed background processes
 
-The tools `start_process`, `process_input`, `process_output`, and `stop_process` support development servers, watchers, and interactive commands across tool calls. In v1.0.0 they are **experimental and disabled by default**:
+The tools `start_process`, `process_input`, `process_output`, and `stop_process` support development servers, watchers, and interactive commands across tool calls. In v1.1.0 they are **experimental and disabled by default**:
 
 ```json
 {
@@ -114,7 +114,7 @@ Opening a generated or analyzed document in another application crosses into tha
 
 ## Dependencies and supply chain
 
-The release lock file is committed and CI uses `npm ci`. `npm audit` runs in the security workflow. Dependabot proposes dependency updates. The spreadsheet layer uses `@mui/x-internal-exceljs-fork` through the local dependency name `exceljs` because upstream `exceljs@4.4.0` retained vulnerable, obsolete transitive dependencies at the v1.0.0 release date.
+The release lock file is committed and CI uses `npm ci`. `npm audit` runs in the security workflow. Dependabot proposes dependency updates. The spreadsheet layer uses `@mui/x-internal-exceljs-fork` through the local dependency name `exceljs`. The presentation layer vendors reviewed PptxGenJS 4.0.1 runtime bundles without its unused `image-size` dependency because no patched `image-size` release was available at the v1.1.0 release date; Deep-Mix accepts only bounded in-memory PNG/JPEG presentation images.
 
 An audit result is a point-in-time signal, not a guarantee. Review lock-file changes, install scripts, maintainer changes, provenance, and release notes before accepting dependency updates.
 

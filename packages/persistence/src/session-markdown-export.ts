@@ -58,16 +58,48 @@ function codeBlock(content: string, language = ""): string {
   return `${fence}${language}\n${content}\n${fence}`;
 }
 
+const SENSITIVE_EXPORT_KEY = /^(?:api[-_]?key|authorization|proxy-authorization|cookie|set-cookie|secret|access[-_]?token|refresh[-_]?token|credential|x-api-key)$/i;
+
+function redactUrlQuery(value: string): string {
+  return value.replace(/https?:\/\/[^\s"'<>`]+/gu, (candidate) => {
+    try {
+      const url = new URL(candidate);
+      if (!url.search && !url.hash) return candidate;
+      return `${url.origin}${url.pathname}?[REDACTED_QUERY]`;
+    } catch {
+      return candidate.replace(/\?[^\s"'<>`]*/u, "?[REDACTED_QUERY]");
+    }
+  });
+}
+
+export function redactSessionExportText(value: string): string {
+  return redactUrlQuery(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/giu, "Bearer [REDACTED]")
+    .replace(/\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED_KEY]")
+    .replace(/((?:api[-_]?key|authorization|x-api-key|access[-_]?token|secret)\s*[:=]\s*)[^\s,;]+/giu, "$1[REDACTED]");
+}
+
+export function sanitizeSessionExportValue(value: unknown, depth = 0): unknown {
+  if (depth > 20) return "[REDACTED_DEPTH]";
+  if (typeof value === "string") return redactSessionExportText(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeSessionExportValue(entry, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+    key,
+    SENSITIVE_EXPORT_KEY.test(key) ? "[REDACTED]" : sanitizeSessionExportValue(entry, depth + 1),
+  ]));
+}
+
 function jsonBlock(value: unknown): string {
-  return codeBlock(JSON.stringify(value, null, 2), "json");
+  return codeBlock(JSON.stringify(sanitizeSessionExportValue(value), null, 2), "json");
 }
 
 function textBlock(value: string): string {
-  return codeBlock(value || "", "text");
+  return codeBlock(redactSessionExportText(value || ""), "text");
 }
 
 function patchBlock(value: string): string {
-  return codeBlock(value || "", "diff");
+  return codeBlock(redactSessionExportText(value || ""), "diff");
 }
 
 function section(title: string, body: string[]): string {

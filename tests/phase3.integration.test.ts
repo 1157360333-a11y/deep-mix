@@ -336,19 +336,19 @@ describe("phase 3 supervisor review loop", () => {
     });
 
     const approvalLog = await fs.readFile(
-      path.join(harness.workspaceRoot, ".deep-mix", "approval-records", `${harness.sessionId}.jsonl`),
+      path.join(harness.sessionStore.paths.approvalRecordsDir, `${harness.sessionId}.jsonl`),
       "utf8",
     );
     expect(approvalLog).toContain("\"status\":\"pending\"");
     expect(approvalLog).toContain("\"status\":\"resolved\"");
     expect(approvalLog).toContain("\"toolName\":\"apply_artifact_patch\"");
 
-    const promotionLog = await fs.readFile(path.join(harness.workspaceRoot, ".deep-mix", "promotion-log.jsonl"), "utf8");
+    const promotionLog = await fs.readFile(harness.sessionStore.paths.promotionLogPath, "utf8");
     expect(promotionLog).toContain("\"recordType\":\"artifact_promotion\"");
     expect(promotionLog).toContain("\"verificationSummary\":[\"run_tests:ok\"]");
 
     const sessionJsonl = await fs.readFile(
-      path.join(harness.workspaceRoot, ".deep-mix", "sessions", `${harness.sessionId}.jsonl`),
+      path.join(harness.sessionStore.paths.sessionsDir, `${harness.sessionId}.jsonl`),
       "utf8",
     );
     expect(sessionJsonl).not.toContain("*** Begin Patch");
@@ -652,7 +652,7 @@ describe("phase 3 supervisor review loop", () => {
     );
     expect(await fs.readFile(path.join(harness.workspaceRoot, "src", "add.js"), "utf8")).toContain("return a + b;");
     const conversationJsonl = await fs.readFile(
-      path.join(harness.workspaceRoot, ".deep-mix", "sessions", `${harness.sessionId}.jsonl`),
+      path.join(harness.sessionStore.paths.sessionsDir, `${harness.sessionId}.jsonl`),
       "utf8",
     );
     expect(conversationJsonl).not.toContain("temporary conversation entry");
@@ -675,7 +675,7 @@ describe("phase 3 supervisor review loop", () => {
     );
     expect(await fs.readFile(path.join(harness.workspaceRoot, "src", "add.js"), "utf8")).toContain("return a + b;");
     const finalSessionJsonl = await fs.readFile(
-      path.join(harness.workspaceRoot, ".deep-mix", "sessions", `${harness.sessionId}.jsonl`),
+      path.join(harness.sessionStore.paths.sessionsDir, `${harness.sessionId}.jsonl`),
       "utf8",
     );
     expect(finalSessionJsonl).not.toContain("temporary both entry");

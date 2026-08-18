@@ -2,25 +2,42 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron"
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
-import { GovernorRuntime, PermissionRequiredError } from "@deep-mix/core-governor";
+import {
+  createFallbackSessionTitle,
+  GovernorRuntime,
+  PermissionRequiredError,
+  selectFirstTurnTitleMessages,
+} from "@deep-mix/core-governor";
 import { selectPendingApprovals, SessionStore } from "@deep-mix/persistence";
 import {
+  CLASSIC_MODEL_SETTINGS,
+  createDeepMixSettingsMigrationPlan,
   isPermissionMode,
-  isRouteTarget,
   loadDeepMixSettingsSync,
   resolveDeepMixSettingsPaths,
+  resolveEffectiveModelSettings,
+  saveDeepMixSettings,
 } from "../../../../packages/settings/src/index.js";
-import { inspectApiKeyLibraryProfiles } from "../../../../packages/route-resolver/src/index.js";
+import {
+  createDefaultModelAdapterRegistry,
+} from "../../../../packages/model-adapters/src/index.js";
+import { ProfileService } from "../../../../packages/model-adapters/src/profile-service.js";
+import {
+  resolveLegacyDesktopAttachmentReference,
+  resolveWorkspaceStateDirectory,
+} from "../../../../packages/state-location/src/index.js";
 import type {
   ApprovalRecord,
   DeepMixSettings,
   DiagnosticReportRecord,
   MessageRecord,
+  ModelCapabilityManifest,
+  ModelSlotBinding,
+  ModelSlotId,
   PermissionMode,
   PlanUpdateRecord,
   ReasoningEffort,
   ReplyStyle,
-  RouteTarget,
   RunCallbacks,
   RuntimeEvent,
   SessionRecord,
@@ -36,12 +53,16 @@ import type {
 import type {
   AttachmentDescriptor,
   DesktopExtension,
+  DesktopModelCenterSettings,
+  DesktopModelProfileSaveInput,
+  DesktopModelProbeResult,
   DesktopSettings,
   DesktopSettingsPatch,
   DesktopUserInputResponseInput,
   SessionMutationInput,
   WorkerStatusView,
 } from "@shared/ipc";
+import { resolveDesktopShortcuts } from "@shared/shortcut-config";
 import {
   createDesktopMessageMetadata,
   readDesktopMessagePresentation,
@@ -85,16 +106,18 @@ interface WorkspaceRuntimeContext {
   runtime: GovernorRuntime;
   sessionStore: SessionStore;
   permissionMode: PermissionMode;
-  routeOverride?: RouteTarget;
   reasoningEffort: Exclude<ReasoningEffort, "not_applicable">;
   thinkingMode: ThinkingModeType;
   replyStyle: ReplyStyle;
+  shortcuts: DesktopSettings["shortcuts"];
 }
 
 const knownWorkspaceRoots = new Set<string>([defaultWorkspaceRoot]);
 const workspaceStores = new Map<string, SessionStore>();
 const workspaceRuntimePromises = new Map<string, Promise<WorkspaceRuntimeContext>>();
 const sessionWorkspaceRoots = new Map<string, string>();
+const desktopSessionTitleJobs = new Map<string, Promise<void>>();
+const DESKTOP_SESSION_TITLE_VERSION = 2;
 const pendingManagedProcessStops = new Map<string, { sessionId: string; processSessionId: string }>();
 let desktopNetworkService: ToolNetworkService | undefined;
 
@@ -167,32 +190,32 @@ function asReplyStyle(value: unknown): ReplyStyle {
 
 function resolveConfiguredValues(targetWorkspaceRoot: string): {
   permissionMode: PermissionMode;
-  routeOverride?: RouteTarget;
   reasoningEffort: Exclude<ReasoningEffort, "not_applicable">;
   thinkingMode: ThinkingModeType;
   replyStyle: ReplyStyle;
+  shortcuts: DesktopSettings["shortcuts"];
 } {
   const loaded = loadDeepMixSettingsSync(targetWorkspaceRoot, { collectErrors: false }).settings;
   return {
     permissionMode: isPermissionMode(loaded.defaults?.permissionMode)
     ? loaded.defaults.permissionMode
     : "auto",
-    routeOverride: isRouteTarget(loaded.defaults?.routeOverride)
-      ? loaded.defaults.routeOverride
-      : undefined,
     reasoningEffort: asReasoningEffort(loaded.governor?.reasoningEffort),
     thinkingMode: asThinkingMode(loaded.governor?.thinkingMode),
     replyStyle: asReplyStyle(loaded.governor?.replyStyle),
+    shortcuts: resolveDesktopShortcuts(loaded.desktop?.shortcuts),
   };
 }
 
 function toWorkerStatusView(record: WorkerSessionRecord): WorkerStatusView {
   return {
     workerSessionId: record.workerSessionId,
+    parentSessionId: record.parentSessionId,
     workerType: record.workerType,
     status: record.status,
     objective: record.objective,
     updatedAt: record.updatedAt,
+    modelAssignment: record.modelAssignment,
   };
 }
 
@@ -350,11 +373,79 @@ async function createWindow(): Promise<void> {
 }
 
 async function readProfileStatus(workspaceRoot: string): Promise<DesktopSettings["profiles"]> {
-  return inspectApiKeyLibraryProfiles(workspaceRoot, [
+  return new ProfileService(workspaceRoot).inspect([
     "deepseek_governor",
     "glm_coding_worker",
     "kimi_vision",
   ] as const);
+}
+
+const CLASSIC_PROFILE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  deepseek_governor: "经典总线接入",
+  glm_coding_worker: "经典编程接入",
+  kimi_vision: "经典视觉接入",
+};
+
+async function readModelCenterSettings(workspaceRoot: string): Promise<DesktopModelCenterSettings> {
+  const service = new ProfileService(workspaceRoot);
+  const publicProfiles = service.listPublicProfiles();
+  const profiles = new Map(publicProfiles.map((profile) => [profile.profileId, profile]));
+  const toReference = (profileId: string, model?: string) => {
+    const profile = profiles.get(profileId);
+    return {
+      profileId,
+      displayName: profile?.displayName ?? CLASSIC_PROFILE_DISPLAY_NAMES[profileId] ?? profile?.model ?? profileId,
+      ...(model ? { model } : {}),
+      status: profile ? {
+        exists: true,
+        hasKey: profile.hasCredential,
+        provider: profile.provider,
+        model: profile.model,
+        protocol: profile.protocol,
+        adapterId: profile.adapterId,
+        baseUrl: profile.baseUrl,
+        endpointPath: profile.endpointPath,
+        capabilities: profile.capabilities,
+        allowedSlots: profile.allowedSlots,
+      } : { exists: false, hasKey: false },
+    };
+  };
+  const loaded = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: true });
+  const effective = resolveEffectiveModelSettings(loaded.settings);
+  const slotStatus = (slot: ModelSlotId): DesktopModelCenterSettings["slots"][ModelSlotId] => {
+    const binding = effective.slots[slot];
+    const requiredCapabilities = Object.entries(binding.requirements ?? {})
+      .filter(([, required]) => required === true || typeof required === "number")
+      .map(([name]) => name);
+    let activationError: string | undefined;
+    try {
+      const gate = service.gate(slot, binding.primary.profile, binding.requirements);
+      if (!gate.ok) activationError = `Missing capability: ${gate.missing.join(", ")}`;
+      else if (!gate.profile.hasCredential) activationError = "Credential unavailable";
+      else if (!gate.profile.adapterId) activationError = "Adapter unavailable";
+    } catch (error) {
+      activationError = (error as Error).message;
+    }
+    return {
+      slot,
+      primary: toReference(binding.primary.profile, binding.primary.model),
+      fallbacks: binding.fallbacks.map((entry) => toReference(entry.profile, entry.model)),
+      fallbackEnabled: binding.fallbackPolicy?.enabled ?? false,
+      requiredCapabilities,
+      ...(activationError ? { activationError } : {}),
+    };
+  };
+  return {
+    preset: effective.preset,
+    revision: loaded.settings.version === 2 ? loaded.settings.revision ?? 0 : 0,
+    profileRevision: service.getLocalLibraryRevision(),
+    candidates: publicProfiles.map((profile) => toReference(profile.profileId)),
+    slots: {
+      governor: slotStatus("governor"),
+      coding: slotStatus("coding"),
+      vision: slotStatus("vision"),
+    },
+  };
 }
 
 async function readGitBranch(workspaceRoot: string): Promise<string | undefined> {
@@ -406,8 +497,9 @@ async function listExtensions(rt: GovernorRuntime): Promise<DesktopExtension[]> 
 
 async function buildDesktopSettings(context: WorkspaceRuntimeContext): Promise<DesktopSettings> {
   const { workspaceRoot, runtime: activeRuntime } = context;
-  const [profiles, extensions, capabilities, gitBranch] = await Promise.all([
+  const [profiles, models, extensions, capabilities, gitBranch] = await Promise.all([
     readProfileStatus(workspaceRoot),
+    readModelCenterSettings(workspaceRoot),
     listExtensions(activeRuntime),
     activeRuntime.getRuntimeCapabilities(),
     readGitBranch(workspaceRoot),
@@ -417,11 +509,12 @@ async function buildDesktopSettings(context: WorkspaceRuntimeContext): Promise<D
     workspaceName: path.basename(workspaceRoot),
     gitBranch,
     permissionMode: context.permissionMode,
-    routeOverride: context.routeOverride,
     reasoningEffort: context.reasoningEffort,
     thinkingMode: context.thinkingMode,
     replyStyle: context.replyStyle,
+    shortcuts: context.shortcuts,
     profiles,
+    models,
     extensions,
     capabilities: Object.entries(capabilities.capabilities).map(([name, capability]) => ({
       name,
@@ -488,7 +581,9 @@ async function describeFiles(
           kind,
         };
         if (kind === "image" && imported.size <= 8 * 1024 * 1024) {
-          const contents = await fs.readFile(path.resolve(normalizedWorkspaceRoot, imported.relativePath));
+          const importedPath = resolveLegacyDesktopAttachmentReference(normalizedWorkspaceRoot, imported.relativePath);
+          if (!importedPath) throw new Error("Desktop attachment state reference is invalid.");
+          const contents = await fs.readFile(importedPath);
           attachment.previewUrl = `data:${imported.mimeType};base64,${contents.toString("base64")}`;
         }
         return attachment;
@@ -527,9 +622,10 @@ async function prepareAttachmentsForPrompt(
     const sourceWorkspaceRoot = attachment.workspaceRoot
       ? normalizeWorkspaceRoot(attachment.workspaceRoot)
       : normalizedWorkspaceRoot;
-    const sourcePath = path.isAbsolute(attachment.path)
-      ? attachment.path
-      : path.resolve(sourceWorkspaceRoot, attachment.path);
+    const sourcePath = resolveLegacyDesktopAttachmentReference(sourceWorkspaceRoot, attachment.path)
+      ?? (path.isAbsolute(attachment.path)
+        ? attachment.path
+        : path.resolve(sourceWorkspaceRoot, attachment.path));
     const imported = await importDocumentAttachment({
       sourcePath,
       workspaceRoot: normalizedWorkspaceRoot,
@@ -564,6 +660,9 @@ function resolveAttachmentPreviewPath(
   let storedPath = attachment.path;
   if (storedPath.startsWith("file://")) storedPath = storedPath.slice("file://".length);
   if (/^\/[a-zA-Z]:[\\/]/.test(storedPath)) storedPath = storedPath.slice(1);
+
+  const stateAttachmentPath = resolveLegacyDesktopAttachmentReference(workspaceRoot, storedPath);
+  if (stateAttachmentPath) return stateAttachmentPath;
 
   const inputWasAbsolute = path.isAbsolute(storedPath);
   if (inputWasAbsolute && !allowExternalPath) return undefined;
@@ -662,33 +761,68 @@ function makeRunCallbacks(activeStore: SessionStore, initialSessionId?: string):
 async function maybeGenerateDesktopSessionTitle(
   context: WorkspaceRuntimeContext,
   sessionId: string,
-  preferredInput?: { userRequest: string; assistantResponse: string },
 ): Promise<SessionRecord | undefined> {
   const session = await context.sessionStore.loadSession(sessionId);
-  if (!session || session.titleSource !== "placeholder") return session;
+  const autoTitleEligible = session?.titleSource === "placeholder"
+    || (session?.titleSource === "generated" && session.titleGenerationVersion !== DESKTOP_SESSION_TITLE_VERSION);
+  if (!session || !autoTitleEligible) return session;
 
-  const messages = preferredInput
-    ? []
-    : await context.sessionStore.loadMessages(sessionId);
-  const userRequest = preferredInput?.userRequest
-    ?? messages.find((message) => message.role === "user")?.content;
-  const assistantResponse = preferredInput?.assistantResponse
-    ?? [...messages].reverse().find((message) => message.role === "assistant" && message.content.trim())?.content;
-  if (!userRequest?.trim() || !assistantResponse?.trim()) return session;
+  const firstTurnMessages = selectFirstTurnTitleMessages(await context.sessionStore.loadMessages(sessionId));
+  if (!firstTurnMessages.some((message) => message.role === "user" && message.content.trim())) return session;
 
   try {
     const generatedTitle = await context.runtime.generateSessionTitle({
-      userRequest,
-      assistantResponse,
+      messages: firstTurnMessages,
     });
     if (!generatedTitle) return session;
-    return context.sessionStore.updateSession(sessionId, (current) => current.titleSource === "placeholder"
-      ? { ...current, title: generatedTitle, titleSource: "generated" }
+    return context.sessionStore.updateSession(sessionId, (current) => (
+      current.titleSource === "placeholder"
+      || (current.titleSource === "generated" && current.titleGenerationVersion !== DESKTOP_SESSION_TITLE_VERSION)
+    )
+      ? {
+          ...current,
+          title: generatedTitle,
+          titleSource: "generated",
+          titleGenerationVersion: DESKTOP_SESSION_TITLE_VERSION,
+        }
       : current);
   } catch (error) {
     console.warn(`Failed to generate a title for desktop session ${sessionId}.`, error);
     return session;
   }
+}
+
+function scheduleDesktopSessionTitle(
+  context: WorkspaceRuntimeContext,
+  sessionId: string,
+): void {
+  if (desktopSessionTitleJobs.has(sessionId)) return;
+  const job = maybeGenerateDesktopSessionTitle(context, sessionId)
+    .then((titledSession) => {
+      if (titledSession?.titleSource === "generated") send("deep-mix:sessionUpdated", titledSession);
+    })
+    .catch((error) => console.warn(`Failed to update the title for desktop session ${sessionId}.`, error))
+    .finally(() => desktopSessionTitleJobs.delete(sessionId));
+  desktopSessionTitleJobs.set(sessionId, job);
+}
+
+function scheduleLegacyDesktopSessionTitleBackfill(store: SessionStore, session: SessionRecord): void {
+  if (session.titleSource !== "placeholder" || session.messageCount < 1 || desktopSessionTitleJobs.has(session.sessionId)) {
+    return;
+  }
+  const job = store.loadMessages(session.sessionId)
+    .then(async (messages) => {
+      const userRequest = messages.find((message) => message.role === "user")?.content;
+      if (!userRequest?.trim()) return;
+      const fallbackTitle = createFallbackSessionTitle(userRequest);
+      const updated = await store.updateSession(session.sessionId, (current) => current.titleSource === "placeholder"
+        ? { ...current, title: fallbackTitle, titleSource: "generated", titleGenerationVersion: 1 }
+        : current);
+      if (updated.titleSource === "generated") send("deep-mix:sessionUpdated", updated);
+    })
+    .catch((error) => console.warn(`Failed to backfill the title for desktop session ${session.sessionId}.`, error))
+    .finally(() => desktopSessionTitleJobs.delete(session.sessionId));
+  desktopSessionTitleJobs.set(session.sessionId, job);
 }
 
 function emitApproval(error: PermissionRequiredError, sessionId: string): void {
@@ -715,35 +849,80 @@ function emitApproval(error: PermissionRequiredError, sessionId: string): void {
 }
 
 async function writeSettingsPatch(workspaceRoot: string, patch: DesktopSettingsPatch): Promise<void> {
-  const { projectSettingsPath } = resolveDeepMixSettingsPaths(workspaceRoot);
-  let projectSettings: DeepMixSettings = {};
+  const { projectSettingsPath, userSettingsPath } = resolveDeepMixSettingsPaths(workspaceRoot);
+  const settingsPath = existsSync(projectSettingsPath) ? projectSettingsPath : userSettingsPath;
+  let storedSettings: DeepMixSettings = {};
   try {
-    projectSettings = JSON.parse(await fs.readFile(projectSettingsPath, "utf8")) as DeepMixSettings;
+    storedSettings = JSON.parse(await fs.readFile(settingsPath, "utf8")) as DeepMixSettings;
   } catch {
-    projectSettings = {};
+    storedSettings = {};
   }
-  projectSettings.version = 1;
-  projectSettings.defaults = { ...(projectSettings.defaults ?? {}) };
-  projectSettings.governor = { ...(projectSettings.governor ?? {}) };
-  projectSettings.skills = { ...(projectSettings.skills ?? {}) };
+  const currentRevision = storedSettings.version === 2 ? storedSettings.revision ?? 0 : 0;
+  const targetSettings: DeepMixSettings = createDeepMixSettingsMigrationPlan(storedSettings)?.preview ?? storedSettings;
+  targetSettings.version = 2;
+  targetSettings.revision = currentRevision;
+  targetSettings.models = patch.models?.restoreClassic
+    ? JSON.parse(JSON.stringify(CLASSIC_MODEL_SETTINGS)) as typeof CLASSIC_MODEL_SETTINGS
+    : resolveEffectiveModelSettings(targetSettings);
+  targetSettings.defaults = { ...(targetSettings.defaults ?? {}) };
+  targetSettings.governor = { ...(targetSettings.governor ?? {}) };
+  targetSettings.skills = { ...(targetSettings.skills ?? {}) };
+  targetSettings.desktop = { ...(targetSettings.desktop ?? {}) };
 
-  if (patch.permissionMode) projectSettings.defaults.permissionMode = patch.permissionMode;
-  if (patch.routeOverride === null) delete projectSettings.defaults.routeOverride;
-  else if (patch.routeOverride) projectSettings.defaults.routeOverride = patch.routeOverride;
-  if (patch.reasoningEffort) projectSettings.governor.reasoningEffort = patch.reasoningEffort;
-  if (patch.thinkingMode) projectSettings.governor.thinkingMode = patch.thinkingMode;
-  if (patch.replyStyle) projectSettings.governor.replyStyle = patch.replyStyle;
+  if (patch.permissionMode) targetSettings.defaults.permissionMode = patch.permissionMode;
+  if (patch.reasoningEffort) targetSettings.governor.reasoningEffort = patch.reasoningEffort;
+  if (patch.thinkingMode) targetSettings.governor.thinkingMode = patch.thinkingMode;
+  if (patch.replyStyle) targetSettings.governor.replyStyle = patch.replyStyle;
+  if (patch.shortcuts) {
+    targetSettings.desktop.shortcuts = {
+      ...(targetSettings.desktop.shortcuts ?? {}),
+      ...patch.shortcuts,
+    };
+  }
   if (patch.enabledSkills) {
-    projectSettings.skills.enabledSkills = {
-      ...(projectSettings.skills.enabledSkills ?? {}),
+    targetSettings.skills.enabledSkills = {
+      ...(targetSettings.skills.enabledSkills ?? {}),
       ...patch.enabledSkills,
     };
   }
-
-  await fs.mkdir(path.dirname(projectSettingsPath), { recursive: true });
-  const temporaryPath = `${projectSettingsPath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(projectSettings, null, 2)}\n`, "utf8");
-  await fs.rename(temporaryPath, projectSettingsPath);
+  if (patch.models && !patch.models.restoreClassic) {
+    const slot = patch.models.slot;
+    const primaryProfileId = patch.models.primaryProfileId?.trim();
+    if (!slot || !primaryProfileId) throw new Error("A semantic slot and primary profile are required.");
+    const binding = targetSettings.models.slots[slot];
+    const profileIds = [primaryProfileId, ...(patch.models.fallbackProfileIds ?? [])];
+    if (new Set(profileIds).size !== profileIds.length) throw new Error("Duplicate primary/fallback profile references are not allowed.");
+    const service = new ProfileService(workspaceRoot);
+    for (const profileId of profileIds) {
+      const gate = service.gate(slot, profileId, binding.requirements);
+      if (!gate.ok || !gate.profile.hasCredential || !gate.profile.adapterId) {
+        const missing = gate.missing.length > 0
+          ? gate.missing.join(", ")
+          : !gate.profile.hasCredential
+            ? "credential"
+            : "adapter";
+        throw new Error(`Cannot activate ${profileId} for ${slot}: missing ${missing}.`);
+      }
+    }
+    targetSettings.models.preset = "custom";
+    targetSettings.models.slots[slot] = {
+      ...binding,
+      primary: {
+        profile: primaryProfileId,
+        ...(patch.models.primaryModel?.trim() ? { model: patch.models.primaryModel.trim() } : {}),
+      },
+      fallbacks: (patch.models.fallbackProfileIds ?? []).map((profile) => ({ profile })),
+      fallbackPolicy: {
+        ...(binding.fallbackPolicy ?? { on: [] }),
+        enabled: (patch.models.fallbackProfileIds?.length ?? 0) > 0,
+      },
+    };
+  }
+  await saveDeepMixSettings(
+    settingsPath,
+    targetSettings,
+    patch.models?.expectedRevision ?? currentRevision,
+  );
 }
 
 app.whenReady().then(async () => {
@@ -827,11 +1006,17 @@ ipcMain.handle("deep-mix:listSessions", async (_event, workspaceRoots?: string[]
       return [];
     }
   }));
-  return groups.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const sessions = groups.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  sessions.forEach((session) => {
+    sessionWorkspaceRoots.set(session.sessionId, session.workspaceRoot);
+    scheduleLegacyDesktopSessionTitleBackfill(getWorkspaceStore(session.workspaceRoot), session);
+  });
+  return sessions;
 });
 
 ipcMain.handle("deep-mix:loadSession", async (_event, sessionId: string) => {
-  const store = await getSessionStoreFor(sessionId);
+  const context = await getSessionRuntimeFor(sessionId);
+  const store = context.sessionStore;
   const session = await store.loadSession(sessionId);
   if (!session) return null;
   selectDesktopWorkspaceRoot(session.workspaceRoot);
@@ -841,7 +1026,7 @@ ipcMain.handle("deep-mix:loadSession", async (_event, sessionId: string) => {
   ]);
   const messages = events.filter((event): event is MessageRecord => event.recordType === "message");
   const turns = events.filter((event): event is TurnRecord => event.recordType === "turn");
-  return {
+  const detail = {
     session,
     messages: await prepareMessagesForDisplay(messages, session.workspaceRoot),
     turns,
@@ -851,13 +1036,21 @@ ipcMain.handle("deep-mix:loadSession", async (_event, sessionId: string) => {
       ?? pendingUserInputStates[0]
     )?.request,
   };
+  if (
+    session.messageCount > 0
+    && session.titleSource === "generated"
+    && session.titleGenerationVersion !== DESKTOP_SESSION_TITLE_VERSION
+  ) {
+    scheduleDesktopSessionTitle(context, sessionId);
+  }
+  return detail;
 });
 
 ipcMain.handle(
   "deep-mix:sendPrompt",
   async (
     _event,
-    input: { sessionId?: string; workspaceRoot?: string; prompt: string; routeOverride?: RouteTarget; attachments?: AttachmentDescriptor[] },
+    input: { sessionId?: string; workspaceRoot?: string; prompt: string; attachments?: AttachmentDescriptor[] },
   ) => {
     const context = input.sessionId
       ? await getSessionRuntimeFor(input.sessionId)
@@ -874,7 +1067,6 @@ ipcMain.handle(
       const result = await context.runtime.runTurn({
         sessionId: selectedSessionId,
         prompt: providerPrompt,
-        routeOverride: input.routeOverride ?? context.routeOverride,
         callbacks: makeRunCallbacks(context.sessionStore, selectedSessionId),
         ...(attachments.length > 0
           ? { userMessageMetadata: createDesktopMessageMetadata(input.prompt, attachments) }
@@ -883,16 +1075,13 @@ ipcMain.handle(
       sessionWorkspaceRoots.set(result.sessionId, context.workspaceRoot);
       const session = await context.sessionStore.loadSession(result.sessionId);
       if (session) send("deep-mix:sessionUpdated", session);
-      void maybeGenerateDesktopSessionTitle(context, result.sessionId, {
-        userRequest: input.prompt,
-        assistantResponse: result.finalResponse,
-      }).then((titledSession) => {
-        if (titledSession?.titleSource === "generated") send("deep-mix:sessionUpdated", titledSession);
-      });
+      scheduleDesktopSessionTitle(context, result.sessionId);
+      return { sessionId: result.sessionId };
     } catch (error) {
       if (error instanceof PermissionRequiredError) {
-        emitApproval(error, error.approvalRecord?.sessionId ?? input.sessionId ?? "unknown");
-        return;
+        const sessionId = error.approvalRecord?.sessionId ?? input.sessionId;
+        emitApproval(error, sessionId ?? "unknown");
+        return { sessionId };
       }
       throw error;
     }
@@ -1020,12 +1209,9 @@ ipcMain.handle(
     try {
       const result = await context.runtime.continuePendingTurn({
         sessionId: input.sessionId,
-        routeOverride: context.routeOverride,
         callbacks: makeRunCallbacks(context.sessionStore, input.sessionId),
       });
-      void maybeGenerateDesktopSessionTitle(context, result.sessionId).then((titledSession) => {
-        if (titledSession?.titleSource === "generated") send("deep-mix:sessionUpdated", titledSession);
-      });
+      scheduleDesktopSessionTitle(context, result.sessionId);
     } catch (error) {
       if (error instanceof PermissionRequiredError) {
         emitApproval(error, input.sessionId);
@@ -1045,12 +1231,9 @@ ipcMain.handle(
     try {
       const result = await context.runtime.respondToUserInput({
         ...input,
-        routeOverride: context.routeOverride,
         callbacks: makeRunCallbacks(context.sessionStore, input.sessionId),
       });
-      void maybeGenerateDesktopSessionTitle(context, result.sessionId).then((titledSession) => {
-        if (titledSession?.titleSource === "generated") send("deep-mix:sessionUpdated", titledSession);
-      });
+      scheduleDesktopSessionTitle(context, result.sessionId);
     } catch (error) {
       if (error instanceof PermissionRequiredError) {
         emitApproval(error, input.sessionId);
@@ -1077,6 +1260,131 @@ ipcMain.handle("deep-mix:updateSettings", async (_event, patch: DesktopSettingsP
   return buildDesktopSettings(await getWorkspaceRuntime(root));
 });
 
+ipcMain.handle("deep-mix:saveModelProfile", async (
+  _event,
+  input: DesktopModelProfileSaveInput,
+  workspaceRoot?: string,
+): Promise<DesktopSettings> => {
+  const root = normalizeWorkspaceRoot(workspaceRoot ?? activeDesktopWorkspaceRoot);
+  selectDesktopWorkspaceRoot(root);
+  const profileId = input.profileId.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profileId)) {
+    throw new Error("Profile ID must contain only letters, numbers, dots, underscores, or hyphens (maximum 64 characters).");
+  }
+  const displayName = input.displayName.trim();
+  if (!displayName || displayName.length > 80) {
+    throw new Error("Connection name must contain 1-80 characters.");
+  }
+  const provider = input.provider.trim();
+  const protocol = input.protocol.trim();
+  const model = input.model.trim();
+  if (!provider || !protocol || !model) throw new Error("Provider, protocol, and model are required.");
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(input.baseUrl.trim());
+  } catch {
+    throw new Error("Base URL must be a valid absolute URL.");
+  }
+  if ((baseUrl.protocol !== "https:" && baseUrl.protocol !== "http:") || baseUrl.username || baseUrl.password) {
+    throw new Error("Base URL must use HTTP(S) and must not contain embedded credentials.");
+  }
+  if (baseUrl.search || baseUrl.hash) {
+    throw new Error("Base URL must not contain a query string or fragment; put endpoint query parameters in the interface path.");
+  }
+  const endpointPath = input.endpointPath.trim();
+  if (!endpointPath.startsWith("/") || endpointPath.startsWith("//")) {
+    throw new Error("Endpoint path must start with one slash.");
+  }
+  const capabilityKeys: Array<Exclude<keyof ModelCapabilityManifest, "contextWindow">> = [
+    "textInput", "imageInput", "streaming", "nativeToolCalling", "structuredOutput", "reasoning",
+  ];
+  if (!Number.isInteger(input.capabilities.contextWindow) || input.capabilities.contextWindow < 1
+    || capabilityKeys.some((key) => typeof input.capabilities[key] !== "boolean")) {
+    throw new Error("Capability manifest is invalid.");
+  }
+  const loadedSettings = loadDeepMixSettingsSync(root, { collectErrors: false }).settings;
+  const currentSettingsRevision = loadedSettings.version === 2 ? loadedSettings.revision ?? 0 : 0;
+  if (currentSettingsRevision !== input.expectedSettingsRevision) {
+    throw new Error(`settings_revision_conflict: expected ${input.expectedSettingsRevision}, current ${currentSettingsRevision}.`);
+  }
+  const effectiveSettings = resolveEffectiveModelSettings(loadedSettings);
+  const service = new ProfileService(root);
+  const existing = service.listPublicProfiles().find((profile) => profile.profileId === profileId);
+  const apiKey = input.apiKey?.trim();
+  if (!apiKey && !existing?.hasCredential) {
+    throw new Error("API Key is required when creating a model profile.");
+  }
+  const registeredAdapter = createDefaultModelAdapterRegistry().resolve(input.adapterId);
+  if (registeredAdapter.protocol !== protocol) {
+    throw new Error(`Protocol ${protocol} does not match adapter ${input.adapterId} (${registeredAdapter.protocol}).`);
+  }
+  const allowedSlots = [...new Set([...(existing?.allowedSlots ?? []), input.slot])];
+  const missingCapabilities = (
+    capabilities: ModelCapabilityManifest,
+    requirements: ModelSlotBinding["requirements"],
+  ): string[] => {
+    const missing: string[] = [];
+    for (const key of capabilityKeys) {
+      if (requirements?.[key] === true && !capabilities[key]) missing.push(key);
+    }
+    if (requirements?.minimumContextWindow !== undefined
+      && capabilities.contextWindow < requirements.minimumContextWindow) {
+      missing.push(`minimumContextWindow:${requirements.minimumContextWindow}`);
+    }
+    return missing;
+  };
+  for (const allowedSlot of allowedSlots) {
+    const missing = missingCapabilities(input.capabilities, effectiveSettings.slots[allowedSlot].requirements);
+    if (missing.length > 0) {
+      throw new Error(`Cannot save ${profileId} for ${allowedSlot}: missing ${missing.join(", ")}.`);
+    }
+  }
+  const saved = await service.saveProfile({
+    profileId,
+    displayName,
+    provider,
+    protocol,
+    adapter: input.adapterId.trim(),
+    allowedSlots,
+    capabilities: { ...input.capabilities },
+    ...(apiKey ? { apiKey } : {}),
+    baseUrl: baseUrl.toString().replace(/\/$/, ""),
+    chatPath: endpointPath,
+    model,
+  }, input.expectedProfileRevision, {
+    preserveCredential: true,
+    preserveAdvancedDefaults: true,
+  });
+  const gate = service.gate(input.slot, saved.profile.profileId, effectiveSettings.slots[input.slot].requirements);
+  if (!gate.ok || !gate.profile.hasCredential) {
+    throw new Error(`Cannot activate ${profileId} for ${input.slot}: missing ${gate.missing.join(", ") || "credential"}.`);
+  }
+  await writeSettingsPatch(root, { models: {
+    expectedRevision: input.expectedSettingsRevision,
+    slot: input.slot,
+    primaryProfileId: saved.profile.profileId,
+    fallbackProfileIds: [],
+  } });
+  await disposeWorkspaceRuntime(root);
+  return buildDesktopSettings(await getWorkspaceRuntime(root));
+});
+
+ipcMain.handle("deep-mix:probeModel", async (_event, profileId: string, workspaceRoot?: string): Promise<DesktopModelProbeResult> => {
+  const root = normalizeWorkspaceRoot(workspaceRoot ?? activeDesktopWorkspaceRoot);
+  const service = new ProfileService(root);
+  const profile = service.listPublicProfiles().find((entry) => entry.profileId === profileId);
+  if (!profile) return { profileId, ok: false, redactedError: "profile_unavailable" };
+  if (!profile.hasCredential) return { profileId, ok: false, skipped: true, adapterId: profile.adapterId, redactedError: "credential_unavailable" };
+  const result = await service.probe(profileId, createDefaultModelAdapterRegistry());
+  return {
+    profileId,
+    ok: result.ok,
+    adapterId: result.adapterId,
+    latencyMs: result.latencyMs,
+    ...(result.redactedError ? { redactedError: result.redactedError } : {}),
+  };
+});
+
 ipcMain.handle("deep-mix:chooseAttachments", async (_event, workspaceRoot?: string) => {
   const root = selectDesktopWorkspaceRoot(workspaceRoot ?? activeDesktopWorkspaceRoot);
   const result = mainWindow
@@ -1101,7 +1409,7 @@ ipcMain.handle("deep-mix:readClipboardImage", async (_event, workspaceRoot?: str
   const stat = await fs.stat(root);
   if (!stat.isDirectory()) throw new Error("当前项目目录不可用。");
 
-  const attachmentDirectory = path.join(root, ".deep-mix", "desktop-attachments");
+  const attachmentDirectory = path.join(resolveWorkspaceStateDirectory(root), "desktop-attachments");
   await fs.mkdir(attachmentDirectory, { recursive: true });
   const targetPath = path.join(attachmentDirectory, `clipboard-${Date.now()}-${randomUUID().slice(0, 8)}.png`);
   await fs.writeFile(targetPath, image.toPNG());
