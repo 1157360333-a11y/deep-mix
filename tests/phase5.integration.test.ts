@@ -361,8 +361,8 @@ describe("phase 5 routing policy and diagnostics", () => {
     expect(presentationEvents[1]).toBe("tool:invoke_coding_worker");
 
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
-    expect(routingDecisions[0]?.finalTarget).toBe("glm_coding");
-    expect(routingDecisions[0]?.automaticTarget).toBe("glm_coding");
+    expect(routingDecisions[0]?.finalTarget).toBe("coding_worker");
+    expect(routingDecisions[0]?.automaticTarget).toBe("coding_worker");
     expect(routingDecisions[0]?.reasonCodes).toContain("backend_implementation_task");
 
     const workerSessionIds = await loadWorkerSessionIds(sessionStore, result.sessionId);
@@ -398,9 +398,9 @@ describe("phase 5 routing policy and diagnostics", () => {
     expect(result.finalResponse).toContain("clearer screenshot");
 
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
-    expect(routingDecisions[0]?.finalTarget).toBe("kimi_vision");
+    expect(routingDecisions[0]?.finalTarget).toBe("vision_worker");
     expect(routingDecisions[1]?.mode).toBe("fallback");
-    expect(routingDecisions[1]?.finalTarget).toBe("ds_direct");
+    expect(routingDecisions[1]?.finalTarget).toBe("governor_direct");
     expect(routingDecisions[1]?.reasonCodes).toContain("vision_worker_failed");
   });
 
@@ -426,8 +426,8 @@ describe("phase 5 routing policy and diagnostics", () => {
 
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
     expect(routingDecisions[0]?.mode).toBe("manual_override");
-    expect(routingDecisions[0]?.automaticTarget).toBe("ds_direct");
-    expect(routingDecisions[0]?.finalTarget).toBe("glm_coding");
+    expect(routingDecisions[0]?.automaticTarget).toBe("governor_direct");
+    expect(routingDecisions[0]?.finalTarget).toBe("coding_worker");
     expect(routingDecisions[0]?.reasonCodes[0]).toBe("manual_override");
   });
 
@@ -485,7 +485,7 @@ describe("phase 5 routing policy and diagnostics", () => {
 
     expect(result.finalResponse).toContain("DeepSeek handled");
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
-    expect(routingDecisions[0]?.finalTarget).toBe("ds_direct");
+    expect(routingDecisions[0]?.finalTarget).toBe("governor_direct");
 
     const diagnosticReports = await loadDiagnosticReports(sessionStore, result.sessionId);
     expect(diagnosticReports.some((report) => report.trigger === "apply_patch")).toBe(true);
@@ -496,7 +496,7 @@ describe("phase 5 routing policy and diagnostics", () => {
     const telemetry = await sessionStore.loadTelemetrySummary();
     expect(telemetry.counters.directDsSuccessCount).toBe(1);
 
-    const sessionJsonl = await fs.readFile(path.join(workspaceRoot, ".deep-mix", "sessions", `${result.sessionId}.jsonl`), "utf8");
+    const sessionJsonl = await fs.readFile(path.join(sessionStore.paths.sessionsDir, `${result.sessionId}.jsonl`), "utf8");
     expect(sessionJsonl).toContain("\"recordType\":\"diagnostic_report\"");
     const sessionRecords = sessionJsonl.trim().split(/\r?\n/u).map(
       (line) => JSON.parse(line) as Record<string, unknown>,
@@ -634,7 +634,7 @@ describe("phase 5 routing policy and diagnostics", () => {
     expect(result.finalResponse).toContain("fell back");
 
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
-    expect(routingDecisions[0]?.finalTarget).toBe("glm_coding");
+    expect(routingDecisions[0]?.finalTarget).toBe("coding_worker");
     expect(routingDecisions[1]?.mode).toBe("fallback");
     expect(routingDecisions[1]?.reasonCodes).toContain("coding_worker_failed");
 
@@ -664,7 +664,7 @@ describe("phase 5 routing policy and diagnostics", () => {
 
     expect(result.finalResponse).toContain("Kimi returned");
     const routingDecisions = await loadRoutingDecisions(sessionStore, result.sessionId);
-    expect(routingDecisions[0]?.finalTarget).toBe("kimi_vision");
+    expect(routingDecisions[0]?.finalTarget).toBe("vision_worker");
     const workerSessionId = (await loadWorkerSessionIds(sessionStore, result.sessionId))[0]!;
     const workerMeta = await sessionStore.loadWorkerSession(workerSessionId);
     expect(workerMeta?.route.role).toBe("vision_worker");

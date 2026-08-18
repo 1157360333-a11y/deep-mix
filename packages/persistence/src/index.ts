@@ -4,7 +4,6 @@ import {
   createReadStream,
   createWriteStream,
   promises as fs,
-  realpathSync,
 } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -26,6 +25,7 @@ import type {
   CodeArtifactSummary,
   DiagnosticReportRecord,
   MessageRecord,
+  ModelAssignmentSnapshot,
   PlanItem,
   PlanUpdateRecord,
   RuntimeCapabilitySnapshot,
@@ -69,7 +69,47 @@ import type {
   WorkerType,
 } from "../../shared-schema/src/index.js";
 import type { ApprovalGrant } from "../../safety/src/index.js";
+import {
+  deriveWorkspaceId,
+  resolveDeepMixHome,
+  resolveLegacyDesktopAttachmentReference,
+  resolveLegacyWorkspaceStateDirectory,
+  resolveWorkspaceStateDirectory,
+  type DeepMixLocationOptions,
+} from "../../state-location/src/index.js";
 import { validateCodeArtifact } from "../../worker-glm-coding/src/index.js";
+
+function freezeAssignment(snapshot: ModelAssignmentSnapshot | undefined): ModelAssignmentSnapshot | undefined {
+  if (!snapshot) return undefined;
+  return Object.freeze({
+    ...snapshot,
+    capabilities: Object.freeze({ ...snapshot.capabilities }),
+  });
+}
+
+function normalizeLegacyRoutingRecord(event: SessionEvent): SessionEvent {
+  if (event.recordType !== "routing_decision") return event;
+  const record = event as unknown as Omit<RoutingDecisionRecord, "finalTarget" | "automaticTarget" | "overrideTarget"> & {
+    finalTarget: string;
+    automaticTarget: string;
+    overrideTarget?: string;
+  };
+  const normalize = (value: string): "governor_direct" | "coding_worker" | "vision_worker" => {
+    if (value === "ds_direct" || value === "governor_direct") return "governor_direct";
+    if (value === "glm_coding" || value === "coding_worker") return "coding_worker";
+    return "vision_worker";
+  };
+  const legacyTarget = record.finalTarget === "ds_direct" || record.finalTarget === "glm_coding" || record.finalTarget === "kimi_vision"
+    ? record.finalTarget
+    : undefined;
+  return {
+    ...record,
+    automaticTarget: normalize(record.automaticTarget),
+    finalTarget: normalize(record.finalTarget),
+    overrideTarget: record.overrideTarget ? normalize(record.overrideTarget) : undefined,
+    legacyTarget,
+  } as RoutingDecisionRecord;
+}
 
 export function selectPendingApprovals(
   events: SessionEvent[],
@@ -87,6 +127,7 @@ export function selectPendingApprovals(
 import { summarizeVisionArtifact, validateVisionArtifact } from "../../worker-kimi-vision/src/index.js";
 
 export interface StatePaths {
+  storageRoot: string;
   stateDir: string;
   exportsDir: string;
   sessionsIndexPath: string;
@@ -111,6 +152,11 @@ export interface StatePaths {
   userInputClaimsDir: string;
   protectedToolCallsDir: string;
   completedToolResultsDir: string;
+  codeIndexDir: string;
+  desktopAttachmentsDir: string;
+  processSessionsDir: string;
+  mcpArtifactsDir: string;
+  worktreesDir: string;
 }
 
 export interface LifecycleCatalogScan<T> {
@@ -245,7 +291,7 @@ interface TelemetrySummary {
   version: 1;
   counters: {
     routingDecisionCount: number;
-    routeTargets: Record<"ds_direct" | "glm_coding" | "kimi_vision", number>;
+    routeTargets: Record<"governor_direct" | "coding_worker" | "vision_worker", number>;
     workerRoutedCount: number;
     workerDecisionCount: number;
     workerAcceptedCount: number;
@@ -254,7 +300,22 @@ interface TelemetrySummary {
     fallbackCount: number;
     fallbackRate: number;
     diagnosticFailureCount: number;
+    governorDirectSuccessCount: number;
+    /** Legacy compatibility mirror; new code writes governorDirectSuccessCount. */
     directDsSuccessCount: number;
+    modelInvocations: Record<string, {
+      slot: ModelAssignmentSnapshot["slot"];
+      adapterId: string;
+      provider: string;
+      model: string;
+      fallbackIndex: number;
+      result: "success" | "failure";
+      count: number;
+      totalLatencyMs: number;
+      inputTokens: number;
+      outputTokens: number;
+      reasoningTokens: number;
+    }>;
   };
 }
 
@@ -344,30 +405,30 @@ async function assertNoSymlinkComponents(root: string, targetPath: string, label
 }
 
 async function ensureRealDirectory(
-  workspaceRoot: string,
+  trustedRoot: string,
   directory: string,
   label: string,
   mode?: number,
 ): Promise<void> {
-  assertPathInside(workspaceRoot, directory, label);
-  await assertNoSymlinkComponents(workspaceRoot, directory, label);
+  assertPathInside(trustedRoot, directory, label);
+  await assertNoSymlinkComponents(trustedRoot, directory, label);
   await fs.mkdir(directory, { recursive: true, ...(mode === undefined ? {} : { mode }) });
-  await assertNoSymlinkComponents(workspaceRoot, directory, label);
+  await assertNoSymlinkComponents(trustedRoot, directory, label);
   const stat = await fs.lstat(directory);
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`${label} is not a trusted real directory.`);
-  const [realWorkspace, realDirectory] = await Promise.all([
-    fs.realpath(workspaceRoot),
+  const [realRoot, realDirectory] = await Promise.all([
+    fs.realpath(trustedRoot),
     fs.realpath(directory),
   ]);
-  assertPathInside(realWorkspace, realDirectory, label);
+  assertPathInside(realRoot, realDirectory, label);
 }
 
 async function assertExistingRealDirectory(
-  workspaceRoot: string,
+  trustedRoot: string,
   directory: string,
   label: string,
 ): Promise<boolean> {
-  assertPathInside(workspaceRoot, directory, label);
+  assertPathInside(trustedRoot, directory, label);
   try {
     const stat = await fs.lstat(directory);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`${label} is not a trusted real directory.`);
@@ -375,9 +436,9 @@ async function assertExistingRealDirectory(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  await assertNoSymlinkComponents(workspaceRoot, directory, label);
-  const [realWorkspace, realDirectory] = await Promise.all([fs.realpath(workspaceRoot), fs.realpath(directory)]);
-  assertPathInside(realWorkspace, realDirectory, label);
+  await assertNoSymlinkComponents(trustedRoot, directory, label);
+  const [realRoot, realDirectory] = await Promise.all([fs.realpath(trustedRoot), fs.realpath(directory)]);
+  assertPathInside(realRoot, realDirectory, label);
   return true;
 }
 
@@ -528,9 +589,9 @@ function createTelemetrySummary(): TelemetrySummary {
     counters: {
       routingDecisionCount: 0,
       routeTargets: {
-        ds_direct: 0,
-        glm_coding: 0,
-        kimi_vision: 0,
+        governor_direct: 0,
+        coding_worker: 0,
+        vision_worker: 0,
       },
       workerRoutedCount: 0,
       workerDecisionCount: 0,
@@ -540,9 +601,25 @@ function createTelemetrySummary(): TelemetrySummary {
       fallbackCount: 0,
       fallbackRate: 0,
       diagnosticFailureCount: 0,
+      governorDirectSuccessCount: 0,
       directDsSuccessCount: 0,
+      modelInvocations: {},
     },
   };
+}
+
+function safeTelemetryDimension(value: string): string {
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const cutoff = [queryIndex, fragmentIndex].filter((index) => index >= 0).reduce(
+    (lowest, index) => Math.min(lowest, index),
+    value.length,
+  );
+  return value.slice(0, cutoff)
+    .replace(/[\u0000-\u001f\u007f]/gu, "")
+    .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
+    .replace(/\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED_KEY]")
+    .slice(0, 160);
 }
 
 function toRelative(workspaceRoot: string, targetPath: string): string {
@@ -662,12 +739,23 @@ function toCodeArtifactSummary(artifact: CodeArtifact): CodeArtifactSummary {
   };
 }
 
-export function createStatePaths(workspaceRoot: string): StatePaths {
-  const stateDir = path.join(workspaceRoot, ".deep-mix");
+export interface CreateStatePathOptions extends DeepMixLocationOptions {
+  stateDir?: string;
+}
+
+export function createStatePaths(
+  workspaceRoot: string,
+  options: CreateStatePathOptions = {},
+): StatePaths {
+  const stateDir = options.stateDir
+    ? path.resolve(options.stateDir)
+    : resolveWorkspaceStateDirectory(workspaceRoot, options);
+  const storageRoot = options.stateDir ? path.dirname(stateDir) : resolveDeepMixHome(options);
   const telemetryDir = path.join(stateDir, "telemetry");
   const workerArtifactsDir = path.join(stateDir, "worker-artifacts");
   const toolOutputsDir = path.join(stateDir, "tool-outputs");
   return {
+    storageRoot,
     stateDir,
     exportsDir: path.join(stateDir, "exports"),
     sessionsIndexPath: path.join(stateDir, "sessions-index.json"),
@@ -692,6 +780,11 @@ export function createStatePaths(workspaceRoot: string): StatePaths {
     userInputClaimsDir: path.join(stateDir, "user-input-claims"),
     protectedToolCallsDir: path.join(stateDir, "protected-tool-calls"),
     completedToolResultsDir: path.join(stateDir, "completed-tool-results"),
+    codeIndexDir: path.join(stateDir, "code-index"),
+    desktopAttachmentsDir: path.join(stateDir, "desktop-attachments"),
+    processSessionsDir: path.join(stateDir, "process-sessions"),
+    mcpArtifactsDir: path.join(stateDir, "mcp-artifacts"),
+    worktreesDir: path.join(stateDir, "worktrees"),
   };
 }
 
@@ -709,18 +802,6 @@ interface TolerantJsonlScan {
   bytesRead: number;
   partial: boolean;
   warnings: LifecycleWarning[];
-}
-
-function deriveWorkspaceId(workspaceRoot: string): string {
-  let canonicalRoot = path.resolve(workspaceRoot);
-  try {
-    canonicalRoot = realpathSync.native(canonicalRoot);
-  } catch {
-    // Construction can precede initialization, so a lexical fallback remains deterministic.
-  }
-  const normalized = canonicalRoot.replace(/\\/gu, "/");
-  const stable = process.platform === "win32" ? normalized.toLowerCase() : normalized;
-  return `workspace_${createHash("sha256").update(stable).digest("hex").slice(0, 24)}`;
 }
 
 function isProtectedLifecyclePath(value: string): boolean {
@@ -1360,6 +1441,42 @@ async function writeJsonExclusiveAtomic(filePath: string, value: unknown): Promi
   }
 }
 
+const LEGACY_RUNTIME_STATE_ENTRIES = new Set([
+  "approval-records",
+  "approval-request-key.bin",
+  "approval-state.json",
+  "checkpoints",
+  "code-index",
+  "completed-tool-results",
+  "desktop-attachments",
+  "exports",
+  "file-history",
+  "mcp-artifacts",
+  "permission-policy.json",
+  "process-sessions",
+  "promotion-log.jsonl",
+  "protected-tool-calls",
+  "rollback-records",
+  "runtime-capabilities.json",
+  "sessions",
+  "sessions-index.json",
+  "telemetry",
+  "tool-outputs",
+  "user-input-claims",
+  "worker-artifacts",
+  "worker-sessions",
+]);
+
+function isLegacyRuntimeStateEntry(name: string): boolean {
+  if (LEGACY_RUNTIME_STATE_ENTRIES.has(name)) return true;
+  return ["approval-state.json", "runtime-capabilities.json", "sessions-index.json"]
+    .some((base) => name.startsWith(`${base}.`) && name.endsWith(".tmp"));
+}
+
+export interface SessionStoreOptions extends CreateStatePathOptions {
+  migrateLegacyState?: boolean;
+}
+
 export class SessionStore implements ToolSessionPersistence {
   public readonly workspaceRoot: string;
 
@@ -1367,14 +1484,20 @@ export class SessionStore implements ToolSessionPersistence {
 
   public readonly paths: StatePaths;
 
+  public readonly legacyStateDir: string;
+
   private readonly workerSessionLocks = new Map<string, Promise<void>>();
 
   private initializationPromise?: Promise<void>;
 
-  public constructor(workspaceRoot: string) {
-    this.workspaceRoot = workspaceRoot;
-    this.workspaceId = deriveWorkspaceId(workspaceRoot);
-    this.paths = createStatePaths(workspaceRoot);
+  private readonly migrateLegacyState: boolean;
+
+  public constructor(workspaceRoot: string, options: SessionStoreOptions = {}) {
+    this.workspaceRoot = path.resolve(workspaceRoot);
+    this.workspaceId = deriveWorkspaceId(this.workspaceRoot);
+    this.paths = createStatePaths(this.workspaceRoot, options);
+    this.legacyStateDir = resolveLegacyWorkspaceStateDirectory(this.workspaceRoot);
+    this.migrateLegacyState = options.migrateLegacyState !== false;
   }
 
   public async ensureInitialized(): Promise<void> {
@@ -1387,6 +1510,13 @@ export class SessionStore implements ToolSessionPersistence {
   }
 
   private async initializeState(): Promise<void> {
+    await fs.mkdir(this.paths.storageRoot, { recursive: true, mode: 0o700 });
+    const storageStat = await fs.lstat(this.paths.storageRoot);
+    if (storageStat.isSymbolicLink() || !storageStat.isDirectory()) {
+      throw new Error("Deep-Mix storage root is not a trusted real directory.");
+    }
+    await this.migrateLegacyWorkspaceState();
+
     for (const [label, directory] of Object.entries({
       state: this.paths.stateDir,
       exports: this.paths.exportsDir,
@@ -1407,7 +1537,7 @@ export class SessionStore implements ToolSessionPersistence {
       protectedToolCalls: this.paths.protectedToolCallsDir,
       completedToolResults: this.paths.completedToolResultsDir,
     })) {
-      await ensureRealDirectory(this.workspaceRoot, directory, `State directory ${label}`);
+      await ensureRealDirectory(this.paths.storageRoot, directory, `State directory ${label}`);
     }
 
     if (!(await exists(this.paths.sessionsIndexPath))) {
@@ -1449,6 +1579,53 @@ export class SessionStore implements ToolSessionPersistence {
     }
   }
 
+  private async migrateLegacyWorkspaceState(): Promise<void> {
+    if (!this.migrateLegacyState || path.resolve(this.legacyStateDir) === path.resolve(this.paths.stateDir)) return;
+    const legacyStat = await fs.lstat(this.legacyStateDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!legacyStat) return;
+    if (legacyStat.isSymbolicLink() || !legacyStat.isDirectory()) {
+      throw new Error("Legacy workspace state is not a trusted real directory.");
+    }
+    await fs.mkdir(this.paths.stateDir, { recursive: true, mode: 0o700 });
+    const entries = await fs.readdir(this.legacyStateDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!isLegacyRuntimeStateEntry(entry.name) || entry.isSymbolicLink()) continue;
+      const source = path.join(this.legacyStateDir, entry.name);
+      const destination = path.join(this.paths.stateDir, entry.name);
+      if (await exists(destination)) continue;
+      try {
+        await fs.rename(source, destination);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" && (await exists(destination))) continue;
+        if (code !== "EXDEV") throw error;
+        try {
+          await fs.cp(source, destination, { recursive: entry.isDirectory(), errorOnExist: true, force: false });
+          await removePathWithoutFollowing(source);
+        } catch (copyError) {
+          if (!["EEXIST", "ENOENT"].includes((copyError as NodeJS.ErrnoException).code ?? "") || !(await exists(destination))) {
+            throw copyError;
+          }
+        }
+      }
+    }
+    const remaining = await fs.readdir(this.legacyStateDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (remaining?.length === 0) {
+      await fs.rmdir(this.legacyStateDir).catch((error: NodeJS.ErrnoException) => {
+        if (!["ENOENT", "ENOTEMPTY"].includes(error.code ?? "")) throw error;
+      });
+    }
+  }
+
   private async garbageCollectProtectedToolCalls(): Promise<void> {
     const index = JSON.parse(await fs.readFile(this.paths.sessionsIndexPath, "utf8")) as SessionsIndex;
     const sessionsByDirectory = new Map(index.sessions.map((session) => [
@@ -1463,7 +1640,7 @@ export class SessionStore implements ToolSessionPersistence {
         await removePathWithoutFollowing(directory);
         continue;
       }
-      await assertExistingRealDirectory(this.workspaceRoot, directory, "Protected tool-call session directory");
+      await assertExistingRealDirectory(this.paths.storageRoot, directory, "Protected tool-call session directory");
       const events = await this.loadEvents(sessionId);
       const responded = new Set(events.flatMap((event) => (
         event.recordType === "message" && event.role === "tool" && event.toolCallId ? [event.toolCallId] : []
@@ -1665,6 +1842,7 @@ export class SessionStore implements ToolSessionPersistence {
     sessionId: string;
     requestSummary: string;
     userMessageId: string;
+    modelAssignment?: TurnRecord["modelAssignment"];
   }): Promise<TurnRecord> {
     const startedAt = now();
     const turn: TurnRecord = {
@@ -1677,6 +1855,7 @@ export class SessionStore implements ToolSessionPersistence {
       requestSummary: input.requestSummary,
       userMessageId: input.userMessageId,
       toolCallIds: [],
+      modelAssignment: input.modelAssignment,
     };
 
     await this.appendEvent(input.sessionId, turn);
@@ -1706,6 +1885,9 @@ export class SessionStore implements ToolSessionPersistence {
   }): Promise<TurnRecord> {
     const finishedAt = now();
     const durationMs = Math.max(0, new Date(finishedAt).getTime() - new Date(input.startedAt).getTime());
+    const existingAssignment = (await this.loadEvents(input.sessionId))
+      .find((event): event is TurnRecord => event.recordType === "turn" && event.turnId === input.turnId && event.modelAssignment !== undefined)
+      ?.modelAssignment;
     const turn: TurnRecord = {
       recordType: "turn",
       turnId: input.turnId,
@@ -1719,6 +1901,7 @@ export class SessionStore implements ToolSessionPersistence {
       userMessageId: input.userMessageId,
       assistantMessageId: input.assistantMessageId,
       toolCallIds: input.toolCallIds,
+      modelAssignment: existingAssignment,
       error: input.error,
     };
 
@@ -1753,7 +1936,11 @@ export class SessionStore implements ToolSessionPersistence {
     return content
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as SessionEvent);
+      .map((line) => JSON.parse(line) as SessionEvent)
+      .map(normalizeLegacyRoutingRecord)
+      .map((event) => event.recordType === "turn" && event.modelAssignment
+        ? { ...event, modelAssignment: freezeAssignment(event.modelAssignment) }
+        : event);
   }
 
   public async resolveMostRecentResumableSession(sessionId?: string): Promise<SessionRecord | undefined> {
@@ -2019,11 +2206,11 @@ export class SessionStore implements ToolSessionPersistence {
     await this.ensureInitialized();
     if (!(await this.loadSession(sessionId))) throw new Error(`Unknown session for protected tool call: ${sessionId}`);
     const directory = path.join(this.paths.protectedToolCallsDir, sanitizeToolOutputFilename(sessionId));
-    await ensureRealDirectory(this.workspaceRoot, this.paths.protectedToolCallsDir, "Protected tool-call root", 0o700);
-    await ensureRealDirectory(this.workspaceRoot, directory, "Protected tool-call session directory", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.protectedToolCallsDir, "Protected tool-call root", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, directory, "Protected tool-call session directory", 0o700);
     const targetPath = path.join(directory, protectedToolCallFileName(toolCall.id));
     assertPathInside(this.paths.protectedToolCallsDir, targetPath, "Protected tool call path");
-    await assertExistingRealDirectory(this.workspaceRoot, directory, "Protected tool-call session directory");
+    await assertExistingRealDirectory(this.paths.storageRoot, directory, "Protected tool-call session directory");
     await writeJsonAtomic(targetPath, toolCall, 0o600);
   }
 
@@ -2036,7 +2223,7 @@ export class SessionStore implements ToolSessionPersistence {
     );
     assertPathInside(this.paths.protectedToolCallsDir, targetPath, "Protected tool call path");
     const directory = path.dirname(targetPath);
-    if (!(await assertExistingRealDirectory(this.workspaceRoot, directory, "Protected tool-call session directory"))) {
+    if (!(await assertExistingRealDirectory(this.paths.storageRoot, directory, "Protected tool-call session directory"))) {
       return undefined;
     }
     try {
@@ -2073,7 +2260,7 @@ export class SessionStore implements ToolSessionPersistence {
     );
     assertPathInside(this.paths.protectedToolCallsDir, targetPath, "Protected tool call path");
     if (!(await assertExistingRealDirectory(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       path.dirname(targetPath),
       "Protected tool-call session directory",
     ))) return;
@@ -2086,7 +2273,7 @@ export class SessionStore implements ToolSessionPersistence {
   ): Promise<ToolExecutionJournalRecord | undefined> {
     await this.ensureInitialized();
     const directory = path.join(this.paths.completedToolResultsDir, sanitizeToolOutputFilename(sessionId));
-    if (!(await assertExistingRealDirectory(this.workspaceRoot, directory, "Tool-execution journal directory"))) {
+    if (!(await assertExistingRealDirectory(this.paths.storageRoot, directory, "Tool-execution journal directory"))) {
       return undefined;
     }
     const targetPath = path.join(directory, protectedToolCallFileName(callId));
@@ -2122,8 +2309,8 @@ export class SessionStore implements ToolSessionPersistence {
       throw new Error(`Unknown session for tool-execution journal: ${input.sessionId}`);
     }
     const directory = path.join(this.paths.completedToolResultsDir, sanitizeToolOutputFilename(input.sessionId));
-    await ensureRealDirectory(this.workspaceRoot, this.paths.completedToolResultsDir, "Tool-execution journal root", 0o700);
-    await ensureRealDirectory(this.workspaceRoot, directory, "Tool-execution journal directory", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.completedToolResultsDir, "Tool-execution journal root", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, directory, "Tool-execution journal directory", 0o700);
     const targetPath = path.join(directory, protectedToolCallFileName(input.callId));
     const record: ToolExecutionJournalRecord = {
       version: 1,
@@ -2152,8 +2339,8 @@ export class SessionStore implements ToolSessionPersistence {
   ): Promise<ToolExecutionJournalRecord> {
     await this.ensureInitialized();
     const directory = path.join(this.paths.completedToolResultsDir, sanitizeToolOutputFilename(sessionId));
-    await ensureRealDirectory(this.workspaceRoot, this.paths.completedToolResultsDir, "Tool-execution journal root", 0o700);
-    await ensureRealDirectory(this.workspaceRoot, directory, "Tool-execution journal directory", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.completedToolResultsDir, "Tool-execution journal root", 0o700);
+    await ensureRealDirectory(this.paths.storageRoot, directory, "Tool-execution journal directory", 0o700);
     const existing = await this.loadToolExecutionJournal(sessionId, result.callId);
     if (existing && existing.toolName !== result.toolName) {
       throw new Error("Tool-execution journal identity conflict.");
@@ -2933,7 +3120,7 @@ export class SessionStore implements ToolSessionPersistence {
     const session = await this.loadSession(sessionId);
     if (!session) throw new Error(`Unknown session for checkpoint catalog: ${sessionId}`);
 
-    const scan = await readJsonlTailTolerant(this.workspaceRoot, this.getSessionJsonlPath(sessionId));
+    const scan = await readJsonlTailTolerant(this.paths.storageRoot, this.getSessionJsonlPath(sessionId));
     const warnings = [...scan.warnings];
     const restored = new Set<string>();
     for (const raw of scan.records) {
@@ -3105,6 +3292,7 @@ export class SessionStore implements ToolSessionPersistence {
     parentSessionId: string;
     task: WorkerTask;
     route: WorkerSessionRecord["route"];
+    modelAssignment?: WorkerSessionRecord["modelAssignment"];
     timeoutMs: number;
     maxRetries: number;
     dispatchKind?: WorkerDispatchKind;
@@ -3123,6 +3311,7 @@ export class SessionStore implements ToolSessionPersistence {
       parentSessionId: input.parentSessionId,
       workerType: input.task.workerType,
       route: input.route,
+      modelAssignment: input.modelAssignment,
       status: "queued",
       statusVersion: 0,
       dispatchKind: input.dispatchKind ?? "initial",
@@ -3168,16 +3357,35 @@ export class SessionStore implements ToolSessionPersistence {
 
   public async loadWorkerSession(workerSessionId: string): Promise<WorkerSessionRecord | undefined> {
     const filePath = this.getWorkerSessionMetaPath(workerSessionId);
-    if (!(await exists(filePath))) {
-      return undefined;
+    let raw: Buffer | undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (!(await exists(filePath))) {
+        if (attempt === 4) return undefined;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      try {
+        raw = await readBoundedVerifiedFile(
+          this.paths.storageRoot,
+          filePath,
+          LIFECYCLE_METADATA_MAX_BYTES,
+          "Worker session metadata",
+        );
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        const transientReplacement = (error as NodeJS.ErrnoException).code === "ENOENT"
+          || message === "Worker session metadata identity changed before it could be read."
+          || message === "Worker session metadata changed while it was being read.";
+        if (!transientReplacement || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
     }
-    const raw = await readBoundedVerifiedFile(
-      this.workspaceRoot,
-      filePath,
-      LIFECYCLE_METADATA_MAX_BYTES,
-      "Worker session metadata",
-    );
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as WorkerSessionRecord;
+    if (!raw) return undefined;
+    const record = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as WorkerSessionRecord;
+    return record.modelAssignment
+      ? { ...record, modelAssignment: freezeAssignment(record.modelAssignment) }
+      : record;
   }
 
   public async updateWorkerSession(
@@ -3220,7 +3428,7 @@ export class SessionStore implements ToolSessionPersistence {
     }
     const warnings: LifecycleWarning[] = [];
     const workerScan = await readJsonlTailTolerant(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       this.getWorkerSessionJsonlPath(workerSessionId),
     );
     warnings.push(...workerScan.warnings);
@@ -3295,7 +3503,7 @@ export class SessionStore implements ToolSessionPersistence {
     }
 
     const parentScan = await readJsonlTailTolerant(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       this.getSessionJsonlPath(parentSessionId),
     );
     warnings.push(...parentScan.warnings);
@@ -3406,7 +3614,7 @@ export class SessionStore implements ToolSessionPersistence {
       }
       const previousTerminal = ["completed", "failed", "cancelled"].includes(previousStatus);
       const explicitReopen = input.status === "running" &&
-        ((previousStatus === "completed" && input.dispatchKind === "revise") ||
+        ((previousStatus === "completed" && (input.dispatchKind === "revise" || input.dispatchKind === "retry")) ||
           (previousStatus === "failed" && input.dispatchKind === "retry"));
       if ((previousTerminal && !explicitReopen) || previousStatus === input.status && previousTerminal) {
         return { session: current, previousStatus, changed: false };
@@ -3638,8 +3846,8 @@ export class SessionStore implements ToolSessionPersistence {
       ...(input.namespace ? [sanitizeToolOutputFilename(input.namespace)] : []),
       sanitizeToolOutputFilename(input.sessionId),
     );
-    await ensureRealDirectory(this.workspaceRoot, this.paths.toolOutputsDir, "Tool-output root");
-    await ensureRealDirectory(this.workspaceRoot, sessionDirectory, "Tool-output session directory");
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.toolOutputsDir, "Tool-output root");
+    await ensureRealDirectory(this.paths.storageRoot, sessionDirectory, "Tool-output session directory");
     const stagedPath = path.join(sessionDirectory, `.deep-mix-tool-output-${randomUUID()}.tmp`);
     assertPathInside(this.paths.toolOutputsDir, stagedPath, "Tool output staging path");
     let absolutePath: string | undefined;
@@ -3651,7 +3859,7 @@ export class SessionStore implements ToolSessionPersistence {
         signal: input.signal,
       });
       input.signal?.throwIfAborted();
-      await assertExistingRealDirectory(this.workspaceRoot, sessionDirectory, "Tool-output session directory");
+      await assertExistingRealDirectory(this.paths.storageRoot, sessionDirectory, "Tool-output session directory");
       const publication = await publishStagedOutput({
         directory: sessionDirectory,
         requestedName: input.fileName,
@@ -3723,8 +3931,8 @@ export class SessionStore implements ToolSessionPersistence {
       ...(input.namespace ? [sanitizeToolOutputFilename(input.namespace)] : []),
       sanitizeToolOutputFilename(input.sessionId),
     );
-    await ensureRealDirectory(this.workspaceRoot, this.paths.toolOutputsDir, "Tool-output root");
-    await ensureRealDirectory(this.workspaceRoot, sessionDirectory, "Tool-output session directory");
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.toolOutputsDir, "Tool-output root");
+    await ensureRealDirectory(this.paths.storageRoot, sessionDirectory, "Tool-output session directory");
     const stagedPath = path.join(sessionDirectory, `.deep-mix-tool-output-${randomUUID()}.tmp`);
     assertPathInside(this.paths.toolOutputsDir, stagedPath, "Tool output staging path");
     let absolutePath: string | undefined;
@@ -3762,7 +3970,7 @@ export class SessionStore implements ToolSessionPersistence {
         throw new Error("Tool output source hash changed during staging.");
       }
       input.signal?.throwIfAborted();
-      await assertExistingRealDirectory(this.workspaceRoot, sessionDirectory, "Tool-output session directory");
+      await assertExistingRealDirectory(this.paths.storageRoot, sessionDirectory, "Tool-output session directory");
       const publication = await publishStagedOutput({
         directory: sessionDirectory,
         requestedName: input.fileName,
@@ -3813,8 +4021,8 @@ export class SessionStore implements ToolSessionPersistence {
       this.paths.toolOutputRecordsDir,
       sanitizeToolOutputFilename(input.sessionId),
     );
-    await ensureRealDirectory(this.workspaceRoot, this.paths.toolOutputRecordsDir, "Tool-output record root");
-    await ensureRealDirectory(this.workspaceRoot, recordDirectory, "Tool-output record session directory");
+    await ensureRealDirectory(this.paths.storageRoot, this.paths.toolOutputRecordsDir, "Tool-output record root");
+    await ensureRealDirectory(this.paths.storageRoot, recordDirectory, "Tool-output record session directory");
     const existing = await this.listToolOutputArtifacts(input.sessionId);
     const prior = existing.find(
       (artifact) => artifact.uri === input.uri && artifact.toolCallId === input.toolCallId,
@@ -3853,7 +4061,7 @@ export class SessionStore implements ToolSessionPersistence {
       sanitizeToolOutputFilename(sessionId),
     );
     if (!(await assertExistingRealDirectory(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       recordDirectory,
       "Tool-output record session directory",
     ))) return [];
@@ -3930,7 +4138,7 @@ export class SessionStore implements ToolSessionPersistence {
     };
 
     const sessionEventScan = await readJsonlTailTolerant(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       this.getSessionJsonlPath(sessionId),
     );
     scanned += sessionEventScan.scanned;
@@ -3954,7 +4162,7 @@ export class SessionStore implements ToolSessionPersistence {
       sanitizeToolOutputFilename(sessionId),
     );
     const toolRecords = await readJsonDirectoryTolerant(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       toolRecordDirectory,
       "tool-output artifact",
     );
@@ -4019,7 +4227,7 @@ export class SessionStore implements ToolSessionPersistence {
         });
         continue;
       }
-      const file = await inspect(this.workspaceRoot, absolutePath, uri);
+      const file = await inspect(this.paths.storageRoot, absolutePath, uri);
       const recordWarnings: LifecycleWarning[] = [];
       if (!candidate.workspaceId) {
         recordWarnings.push({
@@ -4107,7 +4315,7 @@ export class SessionStore implements ToolSessionPersistence {
     }
 
     const workerMeta = await readJsonDirectoryTolerant(
-      this.workspaceRoot,
+      this.paths.storageRoot,
       this.paths.workerSessionsDir,
       "worker-session",
     );
@@ -4145,7 +4353,7 @@ export class SessionStore implements ToolSessionPersistence {
         break;
       }
       const workerEvents = await readJsonlTailTolerant(
-        this.workspaceRoot,
+        this.paths.storageRoot,
         this.getWorkerSessionJsonlPath(workerSessionId),
         remainingEventBytes,
         remainingEventRecords,
@@ -4186,7 +4394,7 @@ export class SessionStore implements ToolSessionPersistence {
           continue;
         }
         const absoluteRecord = this.resolveArtifactPath(artifactRef);
-        const recordFile = await inspect(this.workspaceRoot, absoluteRecord, artifactRef);
+        const recordFile = await inspect(this.paths.storageRoot, absoluteRecord, artifactRef);
         const eventSummary = event.summary;
         if (
           !eventSummary ||
@@ -4257,7 +4465,7 @@ export class SessionStore implements ToolSessionPersistence {
             });
             return;
           }
-          const payload = await inspect(this.workspaceRoot, absolutePath, uri);
+          const payload = await inspect(this.paths.storageRoot, absolutePath, uri);
           const payloadWarnings = [...recordWarnings];
           if (!payload.exists) payloadWarnings.push({ code: "missing_payload", message: "Worker artifact payload is missing.", recordId: uri });
           add({
@@ -4303,7 +4511,7 @@ export class SessionStore implements ToolSessionPersistence {
         } else if (recordFile.exists && recordFile.sizeBytes <= 16 * 1024 * 1024) {
           try {
             const recordBytes = await readBoundedVerifiedFile(
-              this.workspaceRoot,
+              this.paths.storageRoot,
               absoluteRecord,
               16 * 1024 * 1024,
               "Vision artifact metadata",
@@ -4388,7 +4596,7 @@ export class SessionStore implements ToolSessionPersistence {
     const namespaceRoot = toolOutput ? this.paths.toolOutputsDir : this.paths.workerArtifactsDir;
 
     const openVerified = async () => {
-      await assertNoSymlinkComponents(this.workspaceRoot, absolutePath, "Lifecycle artifact path");
+      await assertNoSymlinkComponents(this.paths.storageRoot, absolutePath, "Lifecycle artifact path");
       let pathBefore;
       try {
         pathBefore = await fs.lstat(absolutePath);
@@ -4544,8 +4752,14 @@ export class SessionStore implements ToolSessionPersistence {
     }
     if (uri.startsWith("file://")) {
       const value = uri.slice("file://".length);
-      const absolutePath = path.isAbsolute(value) ? path.resolve(value) : path.resolve(this.workspaceRoot, value);
-      assertPathInside(this.workspaceRoot, absolutePath, "Workspace artifact URI");
+      const stateAttachmentPath = resolveLegacyDesktopAttachmentReference(this.workspaceRoot, value);
+      const absolutePath = stateAttachmentPath
+        ?? (path.isAbsolute(value) ? path.resolve(value) : path.resolve(this.workspaceRoot, value));
+      assertPathInside(
+        stateAttachmentPath ? this.paths.desktopAttachmentsDir : this.workspaceRoot,
+        absolutePath,
+        stateAttachmentPath ? "Desktop attachment URI" : "Workspace artifact URI",
+      );
       return absolutePath;
     }
     throw new Error(`Unsupported tool output artifact URI: ${uri}`);
@@ -4648,7 +4862,7 @@ export class SessionStore implements ToolSessionPersistence {
     const summary = await this.updateTelemetrySummary((current) => {
       current.counters.routingDecisionCount += 1;
       current.counters.routeTargets[record.finalTarget] += 1;
-      if (record.finalTarget !== "ds_direct" && record.mode !== "fallback") {
+      if (record.finalTarget !== "governor_direct" && record.mode !== "fallback") {
         current.counters.workerRoutedCount += 1;
       }
       if (record.mode === "fallback") {
@@ -4692,23 +4906,94 @@ export class SessionStore implements ToolSessionPersistence {
     });
   }
 
-  public async recordDirectDsSuccess(sessionId: string, turnId: string): Promise<void> {
+  public async recordModelInvocation(
+    sessionId: string,
+    assignment: ModelAssignmentSnapshot,
+    input: {
+      result: "success" | "failure";
+      latencyMs: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      reasoningTokens?: number;
+    },
+  ): Promise<void> {
+    const dimensions = {
+      slot: assignment.slot,
+      adapterId: safeTelemetryDimension(assignment.adapterId),
+      provider: safeTelemetryDimension(assignment.provider),
+      model: safeTelemetryDimension(assignment.model),
+      fallbackIndex: assignment.fallbackIndex,
+      result: input.result,
+    } as const;
+    const key = [dimensions.slot, dimensions.adapterId, dimensions.provider, dimensions.model, dimensions.fallbackIndex, dimensions.result].join("|");
     const summary = await this.updateTelemetrySummary((current) => {
-      current.counters.directDsSuccessCount += 1;
+      const existing = current.counters.modelInvocations[key] ?? {
+        ...dimensions,
+        count: 0,
+        totalLatencyMs: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+      };
+      current.counters.modelInvocations[key] = {
+        ...existing,
+        count: existing.count + 1,
+        totalLatencyMs: existing.totalLatencyMs + Math.max(0, Math.round(input.latencyMs)),
+        inputTokens: existing.inputTokens + Math.max(0, Math.round(input.inputTokens ?? 0)),
+        outputTokens: existing.outputTokens + Math.max(0, Math.round(input.outputTokens ?? 0)),
+        reasoningTokens: existing.reasoningTokens + Math.max(0, Math.round(input.reasoningTokens ?? 0)),
+      };
       return current;
     });
-    await this.recordTelemetryMetricSnapshot(sessionId, "direct_ds_success_count", {
-      value: summary.counters.directDsSuccessCount,
+    const aggregate = summary.counters.modelInvocations[key]!;
+    await this.recordTelemetryMetricSnapshot(sessionId, "model_invocation", {
+      value: aggregate.count,
+      metadata: {
+        ...dimensions,
+        latencyMs: Math.max(0, Math.round(input.latencyMs)),
+        inputTokens: Math.max(0, Math.round(input.inputTokens ?? 0)),
+        outputTokens: Math.max(0, Math.round(input.outputTokens ?? 0)),
+        reasoningTokens: Math.max(0, Math.round(input.reasoningTokens ?? 0)),
+      },
+    });
+  }
+
+  public async recordGovernorDirectSuccess(sessionId: string, turnId: string): Promise<void> {
+    const summary = await this.updateTelemetrySummary((current) => {
+      current.counters.governorDirectSuccessCount += 1;
+      current.counters.directDsSuccessCount = current.counters.governorDirectSuccessCount;
+      return current;
+    });
+    await this.recordTelemetryMetricSnapshot(sessionId, "governor_direct_success_count", {
+      value: summary.counters.governorDirectSuccessCount,
       metadata: {
         turnId,
       },
     });
   }
 
+  /** @deprecated Phase 22 compatibility alias. */
+  public async recordDirectDsSuccess(sessionId: string, turnId: string): Promise<void> {
+    await this.recordGovernorDirectSuccess(sessionId, turnId);
+  }
+
   public async loadTelemetrySummary(): Promise<TelemetrySummary> {
     await this.ensureInitialized();
     const content = await fs.readFile(this.paths.telemetrySummaryPath, "utf8");
-    return JSON.parse(content) as TelemetrySummary;
+    const parsed = JSON.parse(content) as TelemetrySummary & {
+      counters: TelemetrySummary["counters"] & {
+        routeTargets: TelemetrySummary["counters"]["routeTargets"] & Partial<Record<"ds_direct" | "glm_coding" | "kimi_vision", number>>;
+      };
+    };
+    parsed.counters.routeTargets = {
+      governor_direct: parsed.counters.routeTargets.governor_direct ?? parsed.counters.routeTargets.ds_direct ?? 0,
+      coding_worker: parsed.counters.routeTargets.coding_worker ?? parsed.counters.routeTargets.glm_coding ?? 0,
+      vision_worker: parsed.counters.routeTargets.vision_worker ?? parsed.counters.routeTargets.kimi_vision ?? 0,
+    };
+    parsed.counters.governorDirectSuccessCount = parsed.counters.governorDirectSuccessCount ?? parsed.counters.directDsSuccessCount ?? 0;
+    parsed.counters.directDsSuccessCount = parsed.counters.directDsSuccessCount ?? parsed.counters.governorDirectSuccessCount;
+    parsed.counters.modelInvocations ??= {};
+    return parsed;
   }
 
   public getSessionJsonlPath(sessionId: string): string {

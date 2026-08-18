@@ -414,7 +414,7 @@ async function searchProvider(input: {
     url: buildBingUrl(input.args),
     headers: {
       Accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
-      "User-Agent": "Deep-Mix/1.0 web_search",
+      "User-Agent": "Deep-Mix/0.1 web_search",
     },
     allowedHosts: [BING_SEARCH_HOST, BING_REGIONAL_SEARCH_HOST],
     route: input.route,

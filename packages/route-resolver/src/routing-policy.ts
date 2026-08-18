@@ -1,5 +1,6 @@
 import type {
-  RouteTarget,
+  RouteTargetInput,
+  SemanticRouteTarget,
   RoutingDecision,
   RoutingFeatures,
   RoutingReasonCode,
@@ -11,7 +12,7 @@ type RoutingFeatureKey = keyof RoutingFeatures;
 
 export interface RoutingRule {
   id: string;
-  target: RouteTarget;
+  target: SemanticRouteTarget;
   summary: string;
   all?: RoutingFeatureKey[];
   any?: RoutingFeatureKey[];
@@ -19,7 +20,7 @@ export interface RoutingRule {
 
 export interface RoutingPolicyConfig {
   rules: RoutingRule[];
-  fallbackTarget: RouteTarget;
+  fallbackTarget: SemanticRouteTarget;
   fallbackReasonCode: RoutingReasonCode;
 }
 
@@ -48,25 +49,25 @@ const FEATURE_REASON_CODES: Record<RoutingFeatureKey, RoutingReasonCode> = {
 export const DEFAULT_ROUTING_POLICY: RoutingPolicyConfig = {
   rules: [
     {
-      id: "route-kimi-screenshot",
-      target: "kimi_vision",
-      summary: "Screenshot, OCR, UI, or diagram tasks default to Kimi vision.",
+      id: "route-vision-screenshot",
+      target: "vision_worker",
+      summary: "Screenshot, OCR, UI, or diagram tasks default to the Vision Worker slot.",
       any: ["isScreenshotTask"],
     },
     {
-      id: "route-glm-complex-coding",
-      target: "glm_coding",
-      summary: "Complex backend or cross-file coding tasks default to the GLM coding worker.",
+      id: "route-coding-complex",
+      target: "coding_worker",
+      summary: "Complex backend or cross-file coding tasks default to the Coding Worker slot.",
       any: ["isComplexCodingTask", "isCrossFile", "requiresBackend"],
     },
     {
-      id: "route-ds-small-patch",
-      target: "ds_direct",
-      summary: "Small direct patches stay with the DeepSeek governor.",
+      id: "route-governor-small-patch",
+      target: "governor_direct",
+      summary: "Small direct patches stay with the Governor slot.",
       all: ["isSmallPatch"],
     },
   ],
-  fallbackTarget: "ds_direct",
+  fallbackTarget: "governor_direct",
   fallbackReasonCode: "no_rule_matched",
 };
 
@@ -110,14 +111,14 @@ function matchesRule(features: RoutingFeatures, rule: RoutingRule): boolean {
   return allMatched && anyMatched;
 }
 
-function summarizeDecision(target: RouteTarget, reasonCodes: RoutingReasonCode[], rule: RoutingRule | undefined): string {
+function summarizeDecision(target: SemanticRouteTarget, reasonCodes: RoutingReasonCode[], rule: RoutingRule | undefined): string {
   const reasonText = reasonCodes.length > 0 ? reasonCodes.join(", ") : "no_reason_codes";
   const prefix =
-    target === "glm_coding"
-      ? "Route to GLM coding worker"
-      : target === "kimi_vision"
-        ? "Route to Kimi vision worker"
-        : "Route to DeepSeek direct handling";
+    target === "coding_worker"
+      ? "Route to Coding Worker"
+      : target === "vision_worker"
+        ? "Route to Vision Worker"
+        : "Route to Governor direct handling";
   return `${prefix} because ${reasonText}${rule ? ` (rule=${rule.id})` : ""}.`;
 }
 
@@ -143,7 +144,7 @@ export function extractRoutingFeatures(prompt: string): RoutingFeatures {
 
 export function resolveRoutingDecision(input: {
   prompt: string;
-  overrideTarget?: RouteTarget;
+  overrideTarget?: RouteTargetInput;
   policy?: RoutingPolicyConfig;
 }): RoutingDecision {
   const policy = input.policy ?? DEFAULT_ROUTING_POLICY;
@@ -156,14 +157,15 @@ export function resolveRoutingDecision(input: {
     input.overrideTarget !== undefined
       ? (["manual_override", ...baseReasonCodes] satisfies RoutingReasonCode[])
       : baseReasonCodes;
-  const finalTarget = input.overrideTarget ?? automaticTarget;
+  const normalizedOverride = input.overrideTarget === undefined ? undefined : normalizeRouteOverride(input.overrideTarget);
+  const finalTarget = normalizedOverride ?? automaticTarget;
 
   return {
     mode: input.overrideTarget ? "manual_override" : "automatic",
     automaticTarget,
     finalTarget,
-    overrideTarget: input.overrideTarget,
-    ruleId: matchedRule?.id ?? "route-ds-fallback",
+    overrideTarget: normalizedOverride,
+    ruleId: matchedRule?.id ?? "route-governor-fallback",
     reasonCodes,
     reasonSummary: summarizeDecision(finalTarget, reasonCodes, matchedRule),
     features,
@@ -177,16 +179,16 @@ export function createFallbackRoutingDecision(input: {
   return {
     mode: "fallback",
     automaticTarget: input.previousDecision.automaticTarget,
-    finalTarget: "ds_direct",
+    finalTarget: "governor_direct",
     overrideTarget: input.previousDecision.overrideTarget,
     ruleId: `${input.previousDecision.ruleId}:fallback`,
     reasonCodes: [input.reasonCode, "fallback_to_governor"],
-    reasonSummary: summarizeDecision("ds_direct", [input.reasonCode, "fallback_to_governor"], undefined),
+    reasonSummary: summarizeDecision("governor_direct", [input.reasonCode, "fallback_to_governor"], undefined),
     features: input.previousDecision.features,
   };
 }
 
-export function normalizeRouteOverride(value: string | undefined): RouteTarget | undefined {
+export function normalizeRouteOverride(value: string | undefined): SemanticRouteTarget | undefined {
   if (!value) {
     return undefined;
   }
@@ -195,13 +197,19 @@ export function normalizeRouteOverride(value: string | undefined): RouteTarget |
     case "ds":
     case "deepseek":
     case "ds_direct":
-      return "ds_direct";
+    case "governor":
+    case "governor_direct":
+      return "governor_direct";
     case "glm":
     case "glm_coding":
-      return "glm_coding";
+    case "coding":
+    case "coding_worker":
+      return "coding_worker";
     case "kimi":
     case "kimi_vision":
-      return "kimi_vision";
+    case "vision":
+    case "vision_worker":
+      return "vision_worker";
     default:
       return undefined;
   }

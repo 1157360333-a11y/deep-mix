@@ -166,6 +166,7 @@ export type RepositoryFingerprintProvider = (
 ) => string | undefined | Promise<string | undefined>;
 
 export interface LocalCodeIndexOptions {
+  stateDirectory?: string;
   limits?: Partial<CodeIndexLimits>;
   adapters?: LanguageAdapter[];
   repositoryFingerprint?: string | RepositoryFingerprintProvider;

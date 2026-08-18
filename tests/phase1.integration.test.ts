@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { GovernorRuntime } from "../packages/core-governor/src/index.js";
+import { createStatePaths } from "../packages/persistence/src/index.js";
 import type {
   AssistantResponse,
   ModelClient,
@@ -264,7 +265,7 @@ describe("phase 1 baseline", () => {
     const fixedFile = await fs.readFile(path.join(workspaceRoot, "src", "add.js"), "utf8");
     expect(fixedFile).toContain("return a + b;");
 
-    const stateRoot = path.join(workspaceRoot, ".deep-mix");
+    const stateRoot = createStatePaths(workspaceRoot).stateDir;
     const sessionsIndex = JSON.parse(await fs.readFile(path.join(stateRoot, "sessions-index.json"), "utf8")) as {
       sessions: Array<{ sessionId: string; status: string; planItems: Array<{ status: string }> }>;
     };
@@ -281,6 +282,7 @@ describe("phase 1 baseline", () => {
     expect(sessionJsonl).toContain("\"recordType\":\"plan_update\"");
     expect(await fs.stat(path.join(stateRoot, "file-history", ".git"))).toBeTruthy();
     expect(await fs.stat(path.join(stateRoot, "checkpoints"))).toBeTruthy();
+    await expect(fs.access(path.join(workspaceRoot, ".deep-mix"))).rejects.toThrow();
     await expect(fs.access(path.join(workspaceRoot, ".git"))).rejects.toThrow();
 
     const resumedRuntime = new GovernorRuntime({

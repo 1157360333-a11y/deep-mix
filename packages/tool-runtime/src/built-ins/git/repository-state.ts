@@ -21,6 +21,7 @@ import {
 
 export interface GitRepositoryContext {
   workspaceRoot: string;
+  managedWorktreeRoot?: string;
   gitExecutable: string;
   processes: ToolProcessRunner;
   clock?: { now(): string };
@@ -45,6 +46,27 @@ async function trustedAbsolutePath(workspaceRoot: string, value: string): Promis
   if (!isInside(path.resolve(workspaceRoot), lexical)) throw new Error(`Git cwd escapes the trusted workspace: ${value}.`);
   const [realWorkspace, realTarget] = await Promise.all([fs.realpath(workspaceRoot), fs.realpath(lexical)]);
   if (!isInside(realWorkspace, realTarget)) throw new Error(`Git cwd resolves outside the trusted workspace: ${value}.`);
+  return realTarget;
+}
+
+async function trustedGitWorkingPath(context: GitRepositoryContext, value: string): Promise<string> {
+  const normalized = value.replace(/\\/gu, "/");
+  const managedLogicalPrefix = ".deep-mix/worktrees";
+  const managedRoot = context.managedWorktreeRoot ? path.resolve(context.managedWorktreeRoot) : undefined;
+  const lexical = managedRoot && !path.isAbsolute(value)
+    && (normalized === managedLogicalPrefix || normalized.startsWith(`${managedLogicalPrefix}/`))
+    ? path.resolve(managedRoot, path.posix.relative(managedLogicalPrefix, normalized))
+    : path.isAbsolute(value)
+      ? path.resolve(value)
+      : path.resolve(context.workspaceRoot, value);
+  const allowedRoot = managedRoot && isInside(managedRoot, lexical)
+    ? managedRoot
+    : path.resolve(context.workspaceRoot);
+  if (!isInside(allowedRoot, lexical)) throw new Error(`Git cwd escapes the trusted workspace or managed worktree root: ${value}.`);
+  const [realAllowedRoot, realTarget] = await Promise.all([fs.realpath(allowedRoot), fs.realpath(lexical)]);
+  if (!isInside(realAllowedRoot, realTarget)) {
+    throw new Error(`Git cwd resolves outside the trusted workspace or managed worktree root: ${value}.`);
+  }
   return realTarget;
 }
 
@@ -162,10 +184,18 @@ export function parseGitNameStatus(output: string): GitPathChange[] {
   return changes;
 }
 
-function displayWorktreePath(workspaceRoot: string, absolutePath: string): { path: string; trusted: boolean } {
+function displayWorktreePath(
+  workspaceRoot: string,
+  absolutePath: string,
+  managedWorktreeRoot?: string,
+): { path: string; trusted: boolean } {
   const resolved = path.resolve(absolutePath);
   if (isInside(path.resolve(workspaceRoot), resolved)) {
     return { path: normalizedRelative(workspaceRoot, resolved), trusted: true };
+  }
+  if (managedWorktreeRoot && isInside(path.resolve(managedWorktreeRoot), resolved)) {
+    const suffix = normalizedRelative(managedWorktreeRoot, resolved);
+    return { path: path.posix.join(".deep-mix/worktrees", suffix), trusted: true };
   }
   return { path: `<outside-workspace>/${path.basename(resolved)}`, trusted: false };
 }
@@ -188,7 +218,11 @@ async function resolveMetadataPath(
   }
 }
 
-export function parseGitWorktreePorcelain(output: string, workspaceRoot: string): GitWorktreeState[] {
+export function parseGitWorktreePorcelain(
+  output: string,
+  workspaceRoot: string,
+  managedWorktreeRoot?: string,
+): GitWorktreeState[] {
   const records: GitWorktreeState[] = [];
   let current: Partial<GitWorktreeState> | undefined;
   const flush = (): void => {
@@ -217,7 +251,7 @@ export function parseGitWorktreePorcelain(output: string, workspaceRoot: string)
     const value = separator < 0 ? "" : line.slice(separator + 1);
     if (key === "worktree") {
       flush();
-      const displayed = displayWorktreePath(workspaceRoot, value);
+      const displayed = displayWorktreePath(workspaceRoot, value, managedWorktreeRoot);
       current = { path: displayed.path, trusted: displayed.trusted };
       continue;
     }
@@ -369,8 +403,8 @@ export async function captureGitRepositorySnapshot(
   cwd = ".",
   protectedBranches: readonly string[] = ["main", "master"],
 ): Promise<GitRepositorySnapshot> {
-  const requested = await trustedAbsolutePath(context.workspaceRoot, cwd);
-  const relativeCwd = normalizedRelative(context.workspaceRoot, requested);
+  const requested = await trustedGitWorkingPath(context, cwd);
+  const relativeCwd = displayWorktreePath(context.workspaceRoot, requested, context.managedWorktreeRoot).path;
   const capturedAt = context.clock?.now() ?? new Date().toISOString();
   const inside = await run(context, requested, ["rev-parse", "--is-inside-work-tree"], "Detect Git worktree", 4_096);
   const bareProbe = inside.success && inside.stdout.trim() === "true"
@@ -388,8 +422,8 @@ export async function captureGitRepositorySnapshot(
     8_192,
   );
   if (!rootResult.success || !rootResult.stdout.trim()) return emptySnapshot(relativeCwd, capturedAt);
-  const root = await trustedAbsolutePath(context.workspaceRoot, rootResult.stdout.trim());
-  const repositoryRoot = normalizedRelative(context.workspaceRoot, root);
+  const root = await trustedGitWorkingPath(context, rootResult.stdout.trim());
+  const repositoryRoot = displayWorktreePath(context.workspaceRoot, root, context.managedWorktreeRoot).path;
   const [gitDirResult, commonDirResult] = await Promise.all([
     run(context, root, ["rev-parse", "--absolute-git-dir"], "Resolve Git metadata directory", 8_192),
     run(context, root, ["rev-parse", "--git-common-dir"], "Resolve shared Git metadata directory", 8_192),
@@ -473,7 +507,7 @@ export async function captureGitRepositorySnapshot(
   const operation = isBare ? undefined : await conflictOperation(context, root);
   const conflict = conflictState(operation, status.conflicted);
   const worktrees = worktreeResult.success && !worktreeResult.outputTruncated
-    ? parseGitWorktreePorcelain(worktreeResult.stdout, context.workspaceRoot)
+    ? parseGitWorktreePorcelain(worktreeResult.stdout, context.workspaceRoot, context.managedWorktreeRoot)
     : [];
   if (!worktreeResult.success || worktreeResult.outputTruncated) {
     stateFailures.push(worktreeResult.outputTruncated ? "worktrees_truncated" : "worktrees_failed");

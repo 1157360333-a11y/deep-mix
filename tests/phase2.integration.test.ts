@@ -180,8 +180,8 @@ function createSuccessfulWorkerResult(): GlmCodingWorkerExecutionResult {
   };
 }
 
-async function waitForWorkerSessionId(workspaceRoot: string): Promise<string> {
-  const workerDir = path.join(workspaceRoot, ".deep-mix", "worker-sessions");
+async function waitForWorkerSessionId(sessionStore: SessionStore): Promise<string> {
+  const workerDir = sessionStore.paths.workerSessionsDir;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
       const files = await fs.readdir(workerDir);
@@ -219,9 +219,10 @@ afterEach(async () => {
 describe("phase 2 GLM coding worker integration", () => {
   it("routes a complex coding task through invoke_coding_worker and keeps the patch only in artifact store", async () => {
     const workspaceRoot = await createFixtureWorkspace();
+    const sessionStore = new SessionStore(workspaceRoot);
     const broker = new SpecialistBroker({
       workspaceRoot,
-      sessionStore: new SessionStore(workspaceRoot),
+      sessionStore,
       codingWorkerFactory: () =>
         ({
           runTask: async ({ resolvedContext }) => {
@@ -261,14 +262,14 @@ describe("phase 2 GLM coding worker integration", () => {
     expect(result.session.status).toBe("waiting_for_user");
     expect(result.finalResponse).toContain("CodeArtifact");
 
-    const stateRoot = path.join(workspaceRoot, ".deep-mix");
+    const stateRoot = sessionStore.paths.stateDir;
     const sessionJsonl = await fs.readFile(path.join(stateRoot, "sessions", `${result.sessionId}.jsonl`), "utf8");
     expect(sessionJsonl).toContain("\"recordType\":\"worker_session_link\"");
     expect(sessionJsonl).toContain("artifact://patches/");
     expect(sessionJsonl).not.toContain("*** Begin Patch");
     expect(sessionJsonl).not.toContain("status: 'healthy'");
 
-    const workerSessionId = await waitForWorkerSessionId(workspaceRoot);
+    const workerSessionId = await waitForWorkerSessionId(sessionStore);
     const workerMeta = JSON.parse(
       await fs.readFile(path.join(stateRoot, "worker-sessions", `${workerSessionId}.json`), "utf8"),
     ) as { status: string; parentSessionId: string; route: { role: string }; retryCount: number };
@@ -291,9 +292,10 @@ describe("phase 2 GLM coding worker integration", () => {
 
   it("returns a structured failure to the main session without breaking the governor loop", async () => {
     const workspaceRoot = await createFixtureWorkspace();
+    const sessionStore = new SessionStore(workspaceRoot);
     const broker = new SpecialistBroker({
       workspaceRoot,
-      sessionStore: new SessionStore(workspaceRoot),
+      sessionStore,
       codingWorkerFactory: () =>
         ({
           runTask: async () => {
@@ -334,12 +336,12 @@ describe("phase 2 GLM coding worker integration", () => {
     expect(result.session.status).toBe("waiting_for_user");
     expect(result.finalResponse).toContain("failed");
 
-    const stateRoot = path.join(workspaceRoot, ".deep-mix");
+    const stateRoot = sessionStore.paths.stateDir;
     const sessionJsonl = await fs.readFile(path.join(stateRoot, "sessions", `${result.sessionId}.jsonl`), "utf8");
     expect(sessionJsonl).toContain("response_parse_failed");
     expect(sessionJsonl).not.toContain("*** Begin Patch");
 
-    const workerSessionId = await waitForWorkerSessionId(workspaceRoot);
+    const workerSessionId = await waitForWorkerSessionId(sessionStore);
     const workerMeta = JSON.parse(
       await fs.readFile(path.join(stateRoot, "worker-sessions", `${workerSessionId}.json`), "utf8"),
     ) as { status: string; lastErrorType?: string };
@@ -417,7 +419,7 @@ describe("phase 2 GLM coding worker integration", () => {
       parentSessionId: mainSession.sessionId,
       task: createTask(),
     });
-    const workerSessionId = await waitForWorkerSessionId(workspaceRoot);
+    const workerSessionId = await waitForWorkerSessionId(sessionStore);
 
     await broker.cancelWorkerSession(workerSessionId, "Cancelled during test.");
     const result = await pending;

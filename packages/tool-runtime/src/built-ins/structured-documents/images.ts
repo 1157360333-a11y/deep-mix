@@ -399,7 +399,7 @@ export async function executeReadImage(args: ReadImageArgs, context: RuntimeTool
     visionWorkerHint: {
       toolName: "invoke_vision_worker",
       automaticInvocation: false,
-      reason: "For OCR or semantic interpretation, explicitly invoke the Kimi Vision Worker with the original image reference; read_image never does so automatically.",
+      reason: "For OCR or semantic interpretation, explicitly invoke the configured Vision Worker with the original image reference; read_image never does so automatically.",
     },
   };
   const serialized = JSON.stringify(result);
@@ -478,7 +478,7 @@ export const imagesToolModule: ToolModule = {
   manifest: {
     id: "builtin.images",
     version: "1.0.0",
-    description: "Bounded technical image metadata and artifact-only preview tools with an explicit Kimi Vision Worker boundary.",
+    description: "Bounded technical image metadata and artifact-only preview tools with an explicit configured Vision Worker boundary.",
     source: "built_in",
   },
   create: () => [readImageTool],

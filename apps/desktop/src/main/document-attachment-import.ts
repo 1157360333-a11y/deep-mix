@@ -1,10 +1,12 @@
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { sanitizeToolOutputFilename } from "../../../../packages/persistence/src/index.js";
+import { resolveWorkspaceStateDirectory } from "../../../../packages/state-location/src/index.js";
 
 export const MAX_DOCUMENT_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 
-const DOCUMENT_IMPORT_SUBDIRECTORY = [".deep-mix", "desktop-attachments", "imports"] as const;
+const DOCUMENT_IMPORT_SUBDIRECTORY = ["desktop-attachments", "imports"] as const;
+const DOCUMENT_IMPORT_LOGICAL_PREFIX = [".deep-mix", ...DOCUMENT_IMPORT_SUBDIRECTORY] as const;
 const SUPPORTED_DOCUMENT_MIME_TYPES = {
   ".pdf": "application/pdf",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -116,7 +118,7 @@ async function statSourceFile(sourcePath: string): Promise<Awaited<ReturnType<ty
   }
 }
 
-async function resolveImportDirectory(workspaceRoot: string): Promise<{ workspaceRoot: string; importDirectory: string }> {
+async function resolveImportDirectory(workspaceRoot: string): Promise<{ importDirectory: string }> {
   const absoluteWorkspaceRoot = path.resolve(workspaceRoot);
   let workspaceStat: Awaited<ReturnType<typeof fs.stat>>;
   try {
@@ -132,17 +134,18 @@ async function resolveImportDirectory(workspaceRoot: string): Promise<{ workspac
     });
   }
 
-  const importDirectory = path.join(absoluteWorkspaceRoot, ...DOCUMENT_IMPORT_SUBDIRECTORY);
+  const stateRoot = resolveWorkspaceStateDirectory(absoluteWorkspaceRoot);
+  const importDirectory = path.join(stateRoot, ...DOCUMENT_IMPORT_SUBDIRECTORY);
   try {
     await fs.mkdir(importDirectory, { recursive: true });
-    const [realWorkspaceRoot, realImportDirectory] = await Promise.all([
-      fs.realpath(absoluteWorkspaceRoot),
+    const [realStateRoot, realImportDirectory] = await Promise.all([
+      fs.realpath(stateRoot),
       fs.realpath(importDirectory),
     ]);
-    if (!isPathInside(realWorkspaceRoot, realImportDirectory)) {
+    if (!isPathInside(realStateRoot, realImportDirectory)) {
       throw new DocumentAttachmentImportError(
         "unsafe_import_directory",
-        "桌面附件导入目录逃逸了当前工作区。",
+        "桌面附件导入目录逃逸了用户级状态目录。",
       );
     }
   } catch (error) {
@@ -150,7 +153,7 @@ async function resolveImportDirectory(workspaceRoot: string): Promise<{ workspac
     throw new DocumentAttachmentImportError("import_failed", "无法创建桌面附件导入目录。");
   }
 
-  return { workspaceRoot: absoluteWorkspaceRoot, importDirectory };
+  return { importDirectory };
 }
 
 async function copyWithoutOverwrite(
@@ -205,7 +208,7 @@ export async function importDocumentAttachment(input: {
     );
   }
 
-  const { workspaceRoot, importDirectory } = await resolveImportDirectory(input.workspaceRoot);
+  const { importDirectory } = await resolveImportDirectory(input.workspaceRoot);
   const [realSourcePath, realImportDirectory] = await Promise.all([
     fs.realpath(sourcePath),
     fs.realpath(importDirectory),
@@ -229,14 +232,7 @@ export async function importDocumentAttachment(input: {
     );
   }
 
-  const relativePath = path.relative(workspaceRoot, importedPath).replace(/\\/g, "/");
-  if (!relativePath || relativePath === ".." || relativePath.startsWith("../") || path.isAbsolute(relativePath)) {
-    if (!pathsEqual(importedPath, sourcePath)) await fs.rm(importedPath, { force: true });
-    throw new DocumentAttachmentImportError(
-      "unsafe_import_directory",
-      "导入后的附件不在当前工作区中。",
-    );
-  }
+  const relativePath = [...DOCUMENT_IMPORT_LOGICAL_PREFIX, path.basename(importedPath)].join("/");
 
   return {
     name: path.basename(importedPath),

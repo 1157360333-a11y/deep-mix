@@ -428,7 +428,7 @@ describe("phase 20 structured document integration gate", () => {
       expect(result.output.length).toBeLessThan(20_000);
       expect(result.output).not.toContain(fixture.workspaceRoot);
     }
-    expect(await fs.readdir(fixture.workspaceRoot)).toEqual([".deep-mix"]);
+    expect(await fs.readdir(fixture.workspaceRoot)).toEqual([]);
   });
 
   it("blocks ZIP traversal and non-allowlisted conversion before publication", async () => {

@@ -91,6 +91,7 @@ export interface ToolProcessServices extends ToolProcessRunner {
 export interface ToolPathServices {
   normalize(relativePath: string): string;
   resolveWorkspace(relativePath: string): string;
+  resolveState(relativePath: string): string;
   resolveReadable(refOrPath: string): Promise<{
     absolutePath: string;
     workspaceRelativePath?: string;

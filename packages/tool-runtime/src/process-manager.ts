@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { resolveWorkspaceStateDirectory } from "../../state-location/src/index.js";
 import process from "node:process";
 
 import {
@@ -118,6 +119,8 @@ type RedactionContinuation = "line" | "token";
 
 export interface ToolProcessManagerOptions {
   workspaceRoot: string;
+  stateDirectory?: string;
+  additionalCwdRoots?: string[];
   environment?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   now?: () => string;
@@ -427,10 +430,14 @@ function buildEnvironment(
   };
 }
 
-function resolveInsideWorkspace(workspaceRoot: string, candidate: string): string {
+function resolveInsideWorkspace(workspaceRoot: string, candidate: string, additionalRoots: readonly string[] = []): string {
   const absolute = path.resolve(workspaceRoot, candidate);
-  const relative = path.relative(workspaceRoot, absolute);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  const allowedRoots = [workspaceRoot, ...additionalRoots];
+  const allowed = allowedRoots.some((root) => {
+    const relative = path.relative(root, absolute);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
+  if (!allowed) {
     throw new Error(`Process cwd escapes workspace root: ${candidate}.`);
   }
   return absolute;
@@ -523,6 +530,7 @@ function wait(delayMs: number): Promise<void> {
 
 export class ToolProcessManager {
   private readonly workspaceRoot: string;
+  private readonly additionalCwdRoots: string[];
   private readonly environment: NodeJS.ProcessEnv;
   private readonly platform: NodeJS.Platform;
   private readonly now: () => string;
@@ -545,12 +553,15 @@ export class ToolProcessManager {
 
   public constructor(options: ToolProcessManagerOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
+    this.additionalCwdRoots = (options.additionalCwdRoots ?? []).map((root) => path.resolve(root));
     this.environment = options.environment ?? process.env;
     this.platform = options.platform ?? process.platform;
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? randomUUID;
     this.assertSession = options.assertSession;
-    this.stateDirectory = path.join(this.workspaceRoot, ".deep-mix", "process-sessions");
+    this.stateDirectory = path.resolve(
+      options.stateDirectory ?? path.join(resolveWorkspaceStateDirectory(this.workspaceRoot), "process-sessions"),
+    );
   }
 
   public async initialize(): Promise<void> {
@@ -614,7 +625,7 @@ export class ToolProcessManager {
     if (this.disposed) throw new Error("ToolProcessManager is disposed.");
     if (request.mode === "shell") assertForegroundShellCommand("foreground command", request.command, this.platform);
     else assertManagedExecutable("foreground command", request.command, request.args ?? [], this.platform);
-    const cwd = resolveInsideWorkspace(this.workspaceRoot, request.cwd ?? ".");
+    const cwd = resolveInsideWorkspace(this.workspaceRoot, request.cwd ?? ".", this.additionalCwdRoots);
     const resolved = request.mode === "shell"
       ? resolveForegroundShellCommand(request.command, this.platform)
       : { file: request.command, args: request.args ?? [] };
@@ -699,7 +710,7 @@ export class ToolProcessManager {
       );
     }
 
-    const cwd = resolveInsideWorkspace(this.workspaceRoot, request.cwd);
+    const cwd = resolveInsideWorkspace(this.workspaceRoot, request.cwd, this.additionalCwdRoots);
     const environment = buildEnvironment(this.environment, request.environment);
     const resolved = resolveManagedSpawnCommand(request.command, args, this.platform, environment.environment);
     const processSessionId = this.createId();

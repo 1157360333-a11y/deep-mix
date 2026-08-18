@@ -510,7 +510,7 @@ describe("phase 13 token budget management and runtime observability", () => {
       "html-docx.js",
       "import_merge.js",
       "sample_ops.js",
-      "product_feedback.js",
+      "statau_feedback.js",
       "theme-switcher.js",
       "variable_gen.js",
       "variable_ops.js",
@@ -728,8 +728,8 @@ describe("phase 13 token budget management and runtime observability", () => {
   it("shows context occupancy and duration in the TUI header without overwhelming the first screen", () => {
     const state = createInitialTerminalTuiState();
     state.header = {
-      version: "1.0.0",
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      version: "0.1.0",
+      workspaceRoot: "C:\\Users\\86132\\Desktop\\deepcode",
       permissionMode: "auto",
       profiles: {
         deepseek_governor: { exists: true, hasKey: true },

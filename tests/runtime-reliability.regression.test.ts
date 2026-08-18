@@ -68,7 +68,7 @@ describe("runtime reliability regressions from desktop session c6b32326", () => 
     ].join("\n");
 
     expect(resolveRoutingDecision({ prompt })).toMatchObject({
-      finalTarget: "ds_direct",
+      finalTarget: "governor_direct",
       features: { isCrossFile: false, isComplexCodingTask: false },
     });
   });
@@ -106,6 +106,28 @@ describe("runtime reliability regressions from desktop session c6b32326", () => 
         arguments: { maxChars: 100, path: "scripts/replicate.py" },
         rawArguments: JSON.stringify({ maxChars: 100, path: "scripts/replicate.py" }),
       }),
+    ]);
+  });
+
+  it("removes DSML even when a provider also returns native tool calls", () => {
+    const native = {
+      id: "native-call",
+      name: "list_files",
+      arguments: { cwd: "." },
+      rawArguments: JSON.stringify({ cwd: "." }),
+    };
+    const response = normalizeDeepSeekAssistantToolCalls([
+      "准备检查。",
+      '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="search_files">',
+      '<｜｜DSML｜｜parameter name="pattern" string="true">onStreamText</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>",
+    ].join("\n"), [native]);
+
+    expect(response.content).toBe("准备检查。");
+    expect(response.content).not.toContain("DSML");
+    expect(response.toolCalls).toEqual([
+      native,
+      expect.objectContaining({ name: "search_files", arguments: { pattern: "onStreamText" } }),
     ]);
   });
 

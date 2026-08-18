@@ -30,6 +30,14 @@ function invalidCursor(message: string): Error {
   return Object.assign(new Error(message), { code: "ERR_TOOL_INVALID_ARGUMENTS" });
 }
 
+function decodeCanonicalBase64Url(value: string): Buffer {
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value) {
+    throw invalidCursor("Lifecycle cursor contains non-canonical base64url data.");
+  }
+  return decoded;
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((entry) => canonicalize(entry));
   if (!value || typeof value !== "object") return value;
@@ -95,11 +103,11 @@ export function decodeLifecycleCursor(
     const decipher = createDecipheriv(
       "aes-256-gcm",
       cursorKey(context),
-      Buffer.from(nonceText!, "base64url"),
+      decodeCanonicalBase64Url(nonceText!),
     );
-    decipher.setAuthTag(Buffer.from(tagText!, "base64url"));
+    decipher.setAuthTag(decodeCanonicalBase64Url(tagText!));
     const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(encryptedText!, "base64url")),
+      decipher.update(decodeCanonicalBase64Url(encryptedText!)),
       decipher.final(),
     ]);
     payload = JSON.parse(decrypted.toString("utf8")) as Partial<LifecycleCursorPayload>;

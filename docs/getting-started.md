@@ -8,9 +8,9 @@ This guide takes a clean checkout to a first local Deep-Mix task. Commands use P
 - Node.js 22.12 or newer
 - npm 10 or newer
 - Git
-- a DeepSeek-compatible API key and current model name
+- a compatible governor API key, endpoint, and current model name
 
-Optional workers require their own GLM- and Kimi-compatible endpoints and credentials. They are not required for a first governor-only task.
+Optional workers require profiles whose declared capabilities satisfy the `coding` or `vision` slot. They are not required for a first governor-only task. The included `classic` preset uses DeepSeek-, GLM-, and Kimi-compatible profile names for continuity.
 
 Confirm the toolchain:
 
@@ -39,7 +39,7 @@ New-Item -ItemType Directory -Force .deep-mix\api-key-library | Out-Null
 Copy-Item examples\profiles.example.json .deep-mix\api-key-library\profiles.local.json
 ```
 
-The example configures the required `deepseek_governor` profile and includes disabled-by-placeholder worker profiles. Its DeepSeek model name reflects the public provider documentation at the v1.0.0 release date; model availability changes, so verify it against the [official DeepSeek API documentation](https://api-docs.deepseek.com/) for your account.
+The example configures the classic `deepseek_governor` profile and includes disabled-by-placeholder worker profiles. Model availability changes, so replace each placeholder using the provider's current official documentation.
 
 Set the referenced environment variable for the current PowerShell session:
 
@@ -95,11 +95,11 @@ npm run app
 
 Create a task, choose the target project directory, select a permission mode, and send the first prompt. Desktop and CLI share the same session store and permission behavior for a given workspace.
 
-The repository currently ships source only. `npm run app` starts the development application; no signed installer is included in v1.0.0.
+The repository currently ships source only. `npm run app` starts the development application; no signed installer is included in v1.1.0.
 
 ## 7. Configure optional workers
 
-To use GLM coding or Kimi vision routing:
+To use optional coding or vision routing:
 
 1. replace the `api.example.invalid` endpoint and placeholder model in `profiles.local.json`;
 2. set `GLM_API_KEY` or `KIMI_API_KEY`;
@@ -109,10 +109,10 @@ To use GLM coding or Kimi vision routing:
 ```powershell
 $env:GLM_API_KEY = "your-key"
 npm run probe:model -- --profile glm_coding_worker
-npm run cli -- --workspace C:\path\to\your-project --route glm_coding --mode plan --prompt "Review this repository architecture"
+npm run cli -- --workspace C:\path\to\your-project --route coding_worker --mode plan --prompt "Review this repository architecture"
 ```
 
-The worker remains isolated even when the route is forced. It returns an artifact to the governor and cannot write the workspace directly.
+The worker remains isolated even when the route is forced. It returns an artifact to the governor and cannot write the workspace directly. For provider-neutral bindings and ordered fallbacks, switch the version 2 settings example to `models.preset: "custom"` and edit the relevant slot.
 
 ## 8. Validate the checkout
 

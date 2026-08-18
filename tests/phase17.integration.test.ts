@@ -76,34 +76,6 @@ async function createWorkspace(prefix: string): Promise<{
   return { workspaceRoot, sessionStore, sessionId: session.sessionId };
 }
 
-async function writeGovernorFixtureConfig(workspaceRoot: string): Promise<void> {
-  const profileDirectory = path.join(workspaceRoot, ".deep-mix", "api-key-library");
-  await fs.mkdir(profileDirectory, { recursive: true });
-  await fs.writeFile(
-    path.join(profileDirectory, "profiles.local.json"),
-    JSON.stringify({
-      version: 1,
-      profiles: {
-        deepseek_governor: {
-          provider: "deepseek",
-          role: "governor",
-          baseUrl: "https://example.invalid",
-          chatPath: "/chat/completions",
-          model: "phase17-fixture",
-          headers: { "Content-Type": "application/json" },
-          requestDefaults: {},
-        },
-      },
-    }),
-    "utf8",
-  );
-  await fs.writeFile(
-    path.join(workspaceRoot, ".deep-mix", "settings.json"),
-    JSON.stringify({ version: 1, experimental: { managedProcesses: true } }),
-    "utf8",
-  );
-}
-
 function createRuntime(input: {
   workspaceRoot: string;
   sessionStore: SessionStore;
@@ -114,7 +86,7 @@ function createRuntime(input: {
     sessionStore: input.sessionStore,
     permissionMode: input.permissionMode ?? "danger-full-access",
     environment: { ...process.env, BRAVE_SEARCH_API_KEY: undefined },
-    settings: { version: 1, experimental: { managedProcesses: true } },
+    settings: { version: 1 },
   });
   disposables.push(runtime);
   return runtime;
@@ -225,33 +197,6 @@ afterEach(async () => {
 });
 
 describe("phase 17 managed processes and structured quality tools", () => {
-  it("keeps managed background processes unavailable unless explicitly enabled", async () => {
-    const fixture = await createWorkspace("deep-mix-phase17-default-off-");
-    const runtime = new ToolRuntime({
-      workspaceRoot: fixture.workspaceRoot,
-      sessionStore: fixture.sessionStore,
-      permissionMode: "danger-full-access",
-      environment: { ...process.env, BRAVE_SEARCH_API_KEY: undefined },
-      settings: { version: 1 },
-    });
-    disposables.push(runtime);
-
-    await runtime.initialize();
-    expect(runtime.listRegisteredToolDefinitions().map((tool) => tool.name)).toContain("start_process");
-    expect(runtime.listAvailableToolDefinitions().map((tool) => tool.name)).not.toContain("start_process");
-
-    const result = await runtime.executeManualTool(
-      "start_process",
-      { command: process.execPath, args: ["-e", "process.exit(0)"] },
-      fixture.sessionId,
-    );
-    expect(result.success).toBe(false);
-    expect(structured<StartProcessBody>(result).error?.type).toBe("missing_dependency");
-    expect(structured<StartProcessBody>(result).error?.message).toContain(
-      "experimental.managedProcesses=true",
-    );
-  });
-
   it("completes ready, stdin, cursor output, natural exit, active stop, and ownership checks", async () => {
     const fixture = await createWorkspace("deep-mix-phase17-lifecycle-");
     const otherSession = await fixture.sessionStore.createSession("phase 17 other owner");
@@ -626,7 +571,6 @@ describe("phase 17 managed processes and structured quality tools", () => {
 
   it("cleans session-owned work on governor interruption", async () => {
     const fixture = await createWorkspace("deep-mix-phase17-session-interrupt-");
-    await writeGovernorFixtureConfig(fixture.workspaceRoot);
     const governor = track(new GovernorRuntime({
       workspaceRoot: fixture.workspaceRoot,
       permissionMode: "danger-full-access",

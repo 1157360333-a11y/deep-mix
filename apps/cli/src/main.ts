@@ -1,5 +1,4 @@
 import { stdin as input, stdout as output } from "node:process";
-import { createRequire } from "node:module";
 import { GovernorRuntime } from "../../../packages/core-governor/src/index.js";
 import { SessionStore } from "../../../packages/persistence/src/index.js";
 import { CliSessionShell, createNodePromptReader, readProfileStatus } from "./session-shell.js";
@@ -8,50 +7,20 @@ import { parseArgs } from "./cli-args.js";
 import { resolveCliLaunchConfig } from "./launch-config.js";
 import { createNodeSystemToolNetworkService } from "../../../packages/tool-runtime/src/network/node-system.js";
 
-const require = createRequire(import.meta.url);
-const packageJson = require("../../../package.json") as { version?: string };
-const version = packageJson.version ?? "1.0.0";
-
-const HELP = `Deep-Mix v${version}
-
-Usage:
-  npm run cli -- [prompt] [options]
-
-Options:
-  -h, --help                 Show this help
-  -v, --version              Show the installed version
-  --prompt <text>            Start with an initial prompt
-  --workspace <path>         Set the workspace (default: current directory)
-  --mode <mode>              plan | edit | auto | danger-full-access
-  --route <route>            ds_direct | glm_coding | kimi_vision
-  --resume [session-id]      Resume a session
-  --list-skills              Print discovered skills as JSON
-  --skill-query <text>       Filter --list-skills results
-  --mcp-status               Print MCP server status as JSON
-  --run-workflow <name>      Run a configured deterministic workflow
-`;
-
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (args.showHelp) {
-    output.write(HELP);
-    return;
-  }
-  if (args.showVersion) {
-    output.write(`${version}\n`);
-    return;
-  }
   const { permissionMode, routeOverride } = resolveCliLaunchConfig(args);
   if (args.routeOverride && !routeOverride) {
     throw new Error(`Unsupported route override: ${args.routeOverride}`);
   }
 
   const networkService = createNodeSystemToolNetworkService(process.env);
-  const runtime = new GovernorRuntime({
+  const createRuntime = () => new GovernorRuntime({
     workspaceRoot: args.workspaceRoot,
     permissionMode,
     networkService,
   });
+  let runtime = createRuntime();
   await runtime.initialize();
 
   if (args.listSkills) {
@@ -105,6 +74,19 @@ async function main(): Promise<void> {
     permissionMode,
     routeOverride,
     getProfileStatus: () => readProfileStatus(args.workspaceRoot),
+    reloadRuntime: async () => {
+      const nextRuntime = createRuntime();
+      await nextRuntime.initialize();
+      const previousRuntime = runtime;
+      try {
+        await previousRuntime.dispose();
+      } catch (error) {
+        await nextRuntime.dispose();
+        throw error;
+      }
+      runtime = nextRuntime;
+      return nextRuntime;
+    },
   });
 
   const handleSigint = () => {

@@ -12,8 +12,6 @@ export interface ParsedArgs {
   skillQuery?: string;
   showMcpStatus: boolean;
   runWorkflow?: string;
-  showHelp: boolean;
-  showVersion: boolean;
 }
 
 interface ParseArgOptions {
@@ -105,22 +103,10 @@ export function parseArgs(argv: string[], options: ParseArgOptions = {}): Parsed
     workspaceRoot: cwd,
     listSkills: false,
     showMcpStatus: false,
-    showHelp: false,
-    showVersion: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-
-    if (value === "--help" || value === "-h") {
-      args.showHelp = true;
-      continue;
-    }
-
-    if (value === "--version" || value === "-v") {
-      args.showVersion = true;
-      continue;
-    }
 
     if (value === "--prompt" && argv[index + 1]) {
       args.prompt = argv[index + 1];

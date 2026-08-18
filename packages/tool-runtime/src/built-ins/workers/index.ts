@@ -38,7 +38,7 @@ function createCodingWorkerTool(): RuntimeToolSpec {
   return {
     name: "invoke_coding_worker",
     description:
-      "Route a complex coding task to the isolated GLM coding worker and return the complete structured CodeArtifact record, including its patch reference, changed files, validation commands, risks, and metadata.",
+      "Route a complex coding task to the isolated Coding Worker selected by the coding model slot and return the complete structured CodeArtifact record, including its patch reference, changed files, validation commands, risks, and metadata.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -110,8 +110,8 @@ function createCodingWorkerTool(): RuntimeToolSpec {
           : []),
         {
           kind: "external_system" as const,
-          systems: ["glm_coding_worker"],
-          reason: "Invoke the isolated GLM coding worker through the injected worker service.",
+          systems: ["coding_worker"],
+          reason: "Invoke the isolated Coding Worker selected by the coding model slot through the injected worker service.",
         },
       ];
     },
@@ -165,7 +165,7 @@ function createVisionWorkerTool(): RuntimeToolSpec {
   return {
     name: "invoke_vision_worker",
     description:
-      "Route an image understanding task to the isolated Kimi vision worker and return the complete structured VisionArtifact record plus its artifact references.",
+      "Route an image understanding task to the isolated Vision Worker selected by the vision model slot and return the complete structured VisionArtifact record plus its artifact references.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -232,8 +232,8 @@ function createVisionWorkerTool(): RuntimeToolSpec {
         },
         {
           kind: "external_system",
-          systems: ["kimi_vision_worker"],
-          reason: "Invoke the isolated Kimi vision worker through the injected worker service.",
+          systems: ["vision_worker"],
+          reason: "Invoke the isolated Vision Worker selected by the vision model slot through the injected worker service.",
         },
       ];
     },

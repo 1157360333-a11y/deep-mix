@@ -30,7 +30,11 @@ const requiredPaths = [
   "docs/getting-started.md",
   "docs/configuration.md",
   "docs/security-model.md",
-  "docs/releases/v1.0.0.md",
+  "docs/releases/v1.1.0.md",
+  "vendor/pptxgenjs-safe/LICENSE",
+  "vendor/pptxgenjs-safe/README.md",
+  "vendor/pptxgenjs-safe/dist/pptxgen.cjs.js",
+  "vendor/pptxgenjs-safe/dist/pptxgen.es.js",
 ];
 
 const allowedDeepMixFiles = new Set([
@@ -39,6 +43,14 @@ const allowedDeepMixFiles = new Set([
   ".deep-mix/skills/README.md",
   ".deep-mix/workflows/README.md",
 ]);
+
+const syntheticCredentialFixtureFiles = new Set([
+  "tests/phase19.integration.test.ts",
+  "tests/phase21.integration.test.ts",
+  "tests/phase21.security.test.ts",
+  "tests/phase22.integration.test.ts",
+]);
+const legacyVersionFixtureFiles = new Set(["tests/phase9.integration.test.ts"]);
 
 const regexEscape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const currentWindowsUser = process.env.USERNAME?.trim();
@@ -60,12 +72,13 @@ const privateKeyPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/gu;
 async function walk(directory: string): Promise<string[]> {
   const files: string[] = [];
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
     const absolute = path.join(directory, entry.name);
+    const relative = path.relative(root, absolute).replaceAll("\\", "/");
+    if (entry.isDirectory() && ignoredDirectories.has(entry.name) && relative !== "vendor/pptxgenjs-safe/dist") continue;
     if (entry.isDirectory()) {
       files.push(...await walk(absolute));
     } else if (entry.isFile()) {
-      files.push(path.relative(root, absolute).replaceAll("\\", "/"));
+      files.push(relative);
     }
   }
   return files;
@@ -97,11 +110,12 @@ async function main(): Promise<void> {
 
     const content = await fs.readFile(path.join(root, file), "utf8");
     for (const forbidden of forbiddenPatterns) {
+      if (forbidden.label === "legacy release version" && legacyVersionFixtureFiles.has(file)) continue;
       if (forbidden.pattern.test(content)) {
         errors.push(`Forbidden private/legacy content in ${file}: ${forbidden.label}`);
       }
     }
-    if (knownTokenPattern.test(content)) errors.push(`Potential provider token in ${file}`);
+    if (knownTokenPattern.test(content) && !syntheticCredentialFixtureFiles.has(file)) errors.push(`Potential provider token in ${file}`);
     knownTokenPattern.lastIndex = 0;
     if (privateKeyPattern.test(content)) errors.push(`Potential private key in ${file}`);
     privateKeyPattern.lastIndex = 0;
@@ -128,11 +142,11 @@ async function main(): Promise<void> {
     }
   }
 
-  const packageFiles = files.filter((file) => file === "package.json" || file.endsWith("/package.json"));
+  const packageFiles = files.filter((file) => (file === "package.json" || file.endsWith("/package.json")) && !file.startsWith("vendor/"));
   for (const packageFile of packageFiles) {
     const manifest = JSON.parse(await fs.readFile(path.join(root, packageFile), "utf8")) as { name?: string; version?: string };
-    if (manifest.version && manifest.version !== "1.0.0") {
-      errors.push(`Package version is not 1.0.0: ${packageFile} (${manifest.version})`);
+    if (manifest.version && manifest.version !== "1.1.0") {
+      errors.push(`Package version is not 1.1.0: ${packageFile} (${manifest.version})`);
     }
   }
 

@@ -1,7 +1,7 @@
 {
   "name": "@deep-mix/tool-runtime",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "dependencies": {
     "ajv": "^8.20.0",
@@ -12,7 +12,7 @@
     "node-html-parser": "^7.1.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "5.4.624",
-    "pptxgenjs": "^4.0.1",
+    "pptxgenjs": "file:../../vendor/pptxgenjs-safe",
     "sharp": "^0.35.3",
     "yauzl": "^3.4.0"
   }

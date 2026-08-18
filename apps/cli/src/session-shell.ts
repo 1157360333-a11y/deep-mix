@@ -6,7 +6,15 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { PermissionRequiredError } from "../../../packages/core-governor/src/index.js";
 import type { SupervisorReviewService } from "../../../packages/core-governor/src/index.js";
-import { resolveApiKeyLibraryPath } from "../../../packages/route-resolver/src/index.js";
+import { createDefaultModelAdapterRegistry, ProfileService } from "../../../packages/model-adapters/src/index.js";
+import {
+  CLASSIC_MODEL_SETTINGS,
+  createDeepMixSettingsMigrationPlan,
+  loadDeepMixSettingsSync,
+  resolveDeepMixSettingsPaths,
+  resolveEffectiveModelSettings,
+  saveDeepMixSettings,
+} from "../../../packages/settings/src/index.js";
 import { USER_INPUT_LIMITS } from "../../../packages/shared-schema/src/index.js";
 import type {
   ApprovalPersistence,
@@ -14,6 +22,9 @@ import type {
   ContextBudgetSnapshot,
   ContextCompactionRecord,
   HistoryIntegrityRecord,
+  DeepMixSettings,
+  ModelCapabilityManifest,
+  ModelSlotId,
   PermissionMode,
   RuntimeCapabilitySnapshot,
   RouteTarget,
@@ -130,17 +141,26 @@ export interface CliUiOutputWriter extends OutputWriter {
 export interface ProfileStatusEntry {
   exists: boolean;
   hasKey: boolean;
+  provider?: string;
+  model?: string;
+  adapterId?: string;
+  capabilities?: ModelCapabilityManifest;
+}
+
+export interface ModelSlotStatusEntry {
+  slot: ModelSlotId;
+  primary: { profileId: string; model?: string; status: ProfileStatusEntry };
+  fallbacks: Array<{ profileId: string; model?: string; status: ProfileStatusEntry }>;
+  fallbackEnabled: boolean;
 }
 
 export interface ProfileStatusReport {
   deepseek_governor: ProfileStatusEntry;
   glm_coding_worker: ProfileStatusEntry;
   kimi_vision: ProfileStatusEntry;
-}
-
-interface ApiKeyLibraryFile {
-  version: number;
-  profiles?: Record<string, { apiKey?: string; apiKeyEnvName?: string }>;
+  slots?: Record<ModelSlotId, ModelSlotStatusEntry>;
+  preset?: "classic" | "custom";
+  revision?: number;
 }
 
 export interface RuntimeTurnResult {
@@ -229,6 +249,7 @@ export interface CliShellOptions {
   permissionMode: PermissionMode;
   routeOverride?: RouteTarget;
   getProfileStatus: () => Promise<ProfileStatusReport>;
+  reloadRuntime?: () => Promise<CliRuntimeSurface>;
 }
 
 export interface CliShellRunOptions {
@@ -267,6 +288,9 @@ const HELP_LINES = [
   "  /undo       Restore the latest or selected checkpoint",
   "  /session    Show the current session id",
   "  /status     Show the current session status",
+  "  /models     Show or configure governor/coding/vision model slots",
+  "  /models test <profile>  Run the fixed synthetic connection probe",
+  "  /models classic  Restore classic slot bindings without deleting profiles",
   "  /tools [n]  Expand or print one grouped tool round",
   "  /processes  Show managed processes owned by the current session",
   "  /stop-process <id>  Stop a managed process through the normal approval path",
@@ -277,7 +301,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../../../package.json") as { version?: string };
 
 function versionString(): string {
-  return (packageJson as { version?: string }).version ?? "1.0.0";
+  return (packageJson as { version?: string }).version ?? "1.1.0";
 }
 
 function shortSessionId(sessionId: string | undefined): string {
@@ -701,36 +725,107 @@ function findLatestWorkerSessionLink(events: SessionEvent[]): Extract<SessionEve
 }
 
 export async function readProfileStatus(workspaceRoot: string): Promise<ProfileStatusReport> {
-  const profilePath = resolveApiKeyLibraryPath(workspaceRoot);
-  const empty: ProfileStatusReport = {
-    deepseek_governor: { exists: false, hasKey: false },
-    glm_coding_worker: { exists: false, hasKey: false },
-    kimi_vision: { exists: false, hasKey: false },
+  const service = new ProfileService(workspaceRoot);
+  const publicProfiles = new Map(service.listPublicProfiles().map((profile) => [profile.profileId, profile]));
+  const toStatus = (profileId: string): ProfileStatusEntry => {
+    const profile = publicProfiles.get(profileId);
+    return profile ? {
+      exists: true,
+      hasKey: profile.hasCredential,
+      provider: profile.provider,
+      model: profile.model,
+      adapterId: profile.adapterId,
+      capabilities: profile.capabilities,
+    } : { exists: false, hasKey: false };
   };
-
-  if (!profilePath) {
-    return empty;
-  }
-
-  try {
-    const raw = await fs.readFile(profilePath, "utf8");
-    const library = JSON.parse(raw) as ApiKeyLibraryFile;
-    const profiles = library.profiles ?? {};
-    const readEntry = (name: keyof ProfileStatusReport): ProfileStatusEntry => {
-      const entry = profiles[name];
-      return {
-        exists: entry !== undefined,
-        hasKey: typeof entry?.apiKey === "string" && entry.apiKey.trim().length > 0,
-      };
-    };
+  const loaded = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: true });
+  const models = resolveEffectiveModelSettings(loaded.settings);
+  const slotStatus = (slot: ModelSlotId): ModelSlotStatusEntry => {
+    const binding = models.slots[slot];
     return {
-      deepseek_governor: readEntry("deepseek_governor"),
-      glm_coding_worker: readEntry("glm_coding_worker"),
-      kimi_vision: readEntry("kimi_vision"),
+      slot,
+      primary: { profileId: binding.primary.profile, model: binding.primary.model, status: toStatus(binding.primary.profile) },
+      fallbacks: binding.fallbacks.map((reference) => ({ profileId: reference.profile, model: reference.model, status: toStatus(reference.profile) })),
+      fallbackEnabled: binding.fallbackPolicy?.enabled ?? false,
     };
+  };
+  return {
+    deepseek_governor: toStatus("deepseek_governor"),
+    glm_coding_worker: toStatus("glm_coding_worker"),
+    kimi_vision: toStatus("kimi_vision"),
+    slots: {
+      governor: slotStatus("governor"),
+      coding: slotStatus("coding"),
+      vision: slotStatus("vision"),
+    },
+    preset: models.preset,
+    revision: loaded.settings.version === 2 ? loaded.settings.revision ?? 0 : 0,
+  };
+}
+
+async function readProjectSettingsForWrite(workspaceRoot: string): Promise<{ settings: DeepMixSettings; revision: number; path: string }> {
+  const { projectSettingsPath, userSettingsPath } = resolveDeepMixSettingsPaths(workspaceRoot);
+  const settingsPath = await fs.access(projectSettingsPath)
+    .then(() => projectSettingsPath)
+    .catch(() => userSettingsPath);
+  let current: DeepMixSettings = {};
+  try {
+    current = JSON.parse(await fs.readFile(settingsPath, "utf8")) as DeepMixSettings;
   } catch {
-    return empty;
+    current = {};
   }
+  const migrated = createDeepMixSettingsMigrationPlan(current)?.preview ?? current;
+  return {
+    settings: migrated,
+    revision: current.version === 2 ? current.revision ?? 0 : 0,
+    path: settingsPath,
+  };
+}
+
+async function saveCliModelBinding(
+  workspaceRoot: string,
+  input: { slot?: ModelSlotId; profileId?: string; fallbacks?: string[]; model?: string; classic?: boolean },
+): Promise<string> {
+  const current = await readProjectSettingsForWrite(workspaceRoot);
+  const next: DeepMixSettings = {
+    ...current.settings,
+    version: 2,
+    revision: current.revision,
+    models: input.classic
+      ? JSON.parse(JSON.stringify(CLASSIC_MODEL_SETTINGS)) as typeof CLASSIC_MODEL_SETTINGS
+      : resolveEffectiveModelSettings(current.settings),
+  };
+  if (!input.classic) {
+    if (!input.slot || !input.profileId) throw new Error("Usage: /models set <governor|coding|vision> <profile> [fallback1,fallback2] [model=name]");
+    const requirements = next.models!.slots[input.slot].requirements;
+    const service = new ProfileService(workspaceRoot);
+    const refs = [input.profileId, ...(input.fallbacks ?? [])];
+    for (const profileId of refs) {
+      const mandatory = input.slot === "governor"
+        ? { textInput: true }
+        : input.slot === "coding"
+          ? { textInput: true, structuredOutput: true }
+          : { textInput: true, imageInput: true, structuredOutput: true };
+      const gate = service.gate(input.slot, profileId, { ...mandatory, ...(requirements ?? {}) });
+      if (!gate.ok || !gate.profile.hasCredential || !gate.profile.adapterId) {
+        throw new Error(`Cannot activate ${profileId} for ${input.slot}: missing=${gate.missing.join(",") || (!gate.profile.hasCredential ? "credential" : "adapter")}.`);
+      }
+    }
+    next.models!.preset = "custom";
+    next.models!.slots[input.slot] = {
+      ...next.models!.slots[input.slot],
+      primary: { profile: input.profileId, ...(input.model ? { model: input.model } : {}) },
+      fallbacks: (input.fallbacks ?? []).map((profile) => ({ profile })),
+      fallbackPolicy: {
+        ...(next.models!.slots[input.slot].fallbackPolicy ?? { on: [] }),
+        enabled: (input.fallbacks?.length ?? 0) > 0,
+      },
+    };
+  }
+  const saved = await saveDeepMixSettings(current.path, next, current.revision);
+  return input.classic
+    ? `Classic bindings restored at settings revision ${saved.revision}; custom profiles and credentials were not deleted.`
+    : `${input.slot} now uses ${input.profileId} at settings revision ${saved.revision}; running requests were not changed.`;
 }
 
 export function createNodePromptReader(stdin: Readable, stdout: Writable): PromptReader {
@@ -1252,6 +1347,9 @@ export class CliSessionShell {
         }
         case "/status":
           await this.renderStatus();
+          return;
+        case "/models":
+          await this.handleModels(command.args);
           return;
         case "/tools":
           this.renderToolGroup(command.args);
@@ -1980,6 +2078,87 @@ export class CliSessionShell {
     await this.syncUiSnapshot(snapshot);
   }
 
+  private async handleModels(args: string[]): Promise<void> {
+    const action = args[0]?.toLowerCase();
+    if (!action) {
+      const report = await readProfileStatus(this.options.workspaceRoot);
+      const lines = [`Preset: ${report.preset ?? "classic"} | revision=${report.revision ?? 0}`];
+      for (const slot of ["governor", "coding", "vision"] as const) {
+        const state = report.slots?.[slot];
+        if (!state) continue;
+        const capability = state.primary.status.capabilities;
+        lines.push([
+          `${slot}: ${state.primary.profileId}`,
+          state.primary.model ?? state.primary.status.model ?? "model-unavailable",
+          state.primary.status.hasKey ? "credential=ready" : "credential=missing",
+          `adapter=${state.primary.status.adapterId ?? "missing"}`,
+          `caps=${capability ? `text:${capability.textInput},image:${capability.imageInput},stream:${capability.streaming},tools:${capability.nativeToolCalling},structured:${capability.structuredOutput}` : "unknown"}`,
+          `fallbacks=${state.fallbackEnabled ? state.fallbacks.map((entry) => entry.profileId).join(",") || "none" : "disabled"}`,
+        ].join(" | "));
+      }
+      const result = lines.join("\n");
+      this.recordCommandResult("/models", result, "info");
+      this.output(`${result}\n`);
+      return;
+    }
+    if (action === "classic") {
+      const result = await saveCliModelBinding(this.options.workspaceRoot, { classic: true });
+      const reloadMessage = await this.reloadRuntimeAfterModelChange();
+      const message = reloadMessage ? `${result} ${reloadMessage}` : result;
+      this.recordCommandResult("/models classic", message, "success");
+      this.output(`${message}\n`);
+      return;
+    }
+    if (action === "test") {
+      const profileId = args[1];
+      if (!profileId) throw new Error("Usage: /models test <profile>");
+      const service = new ProfileService(this.options.workspaceRoot);
+      const profile = service.listPublicProfiles().find((entry) => entry.profileId === profileId);
+      if (!profile) throw new Error(`Unknown profile: ${profileId}`);
+      if (!profile.hasCredential) {
+        const skipped = `Probe skipped: ${profileId} has no configured credential.`;
+        this.recordCommandResult("/models test", skipped, "warning");
+        this.output(`${skipped}\n`);
+        return;
+      }
+      const probe = await service.probe(profileId, createDefaultModelAdapterRegistry());
+      const result = `${profileId}: ok=${probe.ok} adapter=${probe.adapterId} latency=${probe.latencyMs}ms${probe.redactedError ? ` error=${probe.redactedError}` : ""}`;
+      this.recordCommandResult("/models test", result, probe.ok ? "success" : "error");
+      this.output(`${result}\n`);
+      return;
+    }
+    if (action === "set") {
+      const slot = args[1] as ModelSlotId | undefined;
+      if (slot !== "governor" && slot !== "coding" && slot !== "vision") throw new Error("Model slot must be governor, coding, or vision.");
+      const profileId = args[2];
+      const fallbacks = args[3] && !args[3].startsWith("model=") ? args[3].split(",").map((entry) => entry.trim()).filter(Boolean) : [];
+      const modelToken = args.find((entry) => entry.startsWith("model="));
+      const result = await saveCliModelBinding(this.options.workspaceRoot, {
+        slot,
+        profileId,
+        fallbacks,
+        model: modelToken?.slice("model=".length),
+      });
+      const reloadMessage = await this.reloadRuntimeAfterModelChange();
+      const message = reloadMessage ? `${result} ${reloadMessage}` : result;
+      this.recordCommandResult("/models set", message, "success");
+      this.output(`${message}\n`);
+      return;
+    }
+    throw new Error("Usage: /models | /models set <slot> <profile> [fallbacks] [model=name] | /models test <profile> | /models classic");
+  }
+
+  private async reloadRuntimeAfterModelChange(): Promise<string | undefined> {
+    if (!this.options.reloadRuntime) {
+      return undefined;
+    }
+    this.options.runtime = await this.options.reloadRuntime();
+    this.capabilitySnapshot = undefined;
+    await this.renderHeader();
+    await this.syncUiSnapshot();
+    return "The new bindings apply to subsequent Provider cycles and worker dispatches.";
+  }
+
   private async renderContext(): Promise<void> {
     if (!this.currentSessionId) {
       const result = "No active session. Start or resume a session before checking context.";
@@ -2078,16 +2257,26 @@ export class CliSessionShell {
     this.output(`Deep-Mix v${versionString()}\n`);
     this.output(`workspace: ${this.options.workspaceRoot}\n`);
     this.output(`mode: ${this.options.permissionMode}\n`);
-    this.output(
-      `profiles: governor=${describeProfile(profiles.deepseek_governor)} | glm=${describeProfile(profiles.glm_coding_worker)} | kimi=${describeProfile(profiles.kimi_vision)}\n`,
-    );
+    const describeSlot = (slot: ModelSlotId): string => {
+      const state = profiles.slots?.[slot];
+      if (!state) {
+        const legacy = slot === "governor"
+          ? profiles.deepseek_governor
+          : slot === "coding"
+            ? profiles.glm_coding_worker
+            : profiles.kimi_vision;
+        return describeProfile(legacy);
+      }
+      return `${state.primary.profileId}/${state.primary.model ?? state.primary.status.model ?? "model-unavailable"}:${describeProfile(state.primary.status)}`;
+    };
+    this.output(`models: governor=${describeSlot("governor")} | coding=${describeSlot("coding")} | vision=${describeSlot("vision")}\n`);
     this.output(
       `runtime: ${["rg", "git", "powershell", "node", "npm"].map((name) => describeCapability(capabilities, name as keyof RuntimeCapabilitySnapshot["capabilities"])).join(" | ")}\n`,
     );
     if (!capabilities.capabilities.rg.available) {
       this.output("startup note: rg missing, list_files/search_files will use the built-in fallback chain.\n");
     }
-    this.output("commands: /help /resume /continue /export /context /undo /status /tools /processes /stop-process /session /exit\n");
+    this.output("commands: /help /resume /continue /export /context /undo /status /models /tools /processes /stop-process /session /exit\n");
   }
 
   private async inspectSession(sessionId: string): Promise<SessionContextSnapshot> {

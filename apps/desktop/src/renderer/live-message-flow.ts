@@ -25,6 +25,69 @@ export interface LiveMessageFlowResult {
   state: LiveMessageFlowState;
 }
 
+const toolStatusRank: Record<ToolCallState["status"], number> = {
+  queued: 0,
+  running: 1,
+  success: 2,
+  error: 2,
+};
+
+function reconcileTools(persisted: ToolCallState[] = [], current: ToolCallState[] = []): ToolCallState[] {
+  const currentById = new Map(current.map((tool) => [tool.id, tool]));
+  const reconciled = persisted.map((tool) => {
+    const live = currentById.get(tool.id);
+    currentById.delete(tool.id);
+    if (!live) return tool;
+    return toolStatusRank[live.status] >= toolStatusRank[tool.status]
+      ? { ...tool, ...live }
+      : { ...live, ...tool };
+  });
+  return [...reconciled, ...currentById.values()];
+}
+
+/**
+ * Persistence is the fallback event source for an active desktop run. Merge a
+ * fresh snapshot with any newer renderer-only phase instead of replacing the
+ * transcript and making streamed text flicker or disappear.
+ */
+export function reconcilePersistedLiveMessages(
+  persisted: DisplayMessage[],
+  current: DisplayMessage[],
+  state: LiveMessageFlowState,
+): DisplayMessage[] {
+  const currentById = new Map(current.map((message) => [message.id, message]));
+  const persistedIds = new Set(persisted.map((message) => message.id));
+  const reconciled = persisted.map((message) => {
+    const live = currentById.get(message.id);
+    if (!live) return message;
+    const content = live.content.length >= message.content.length ? live.content : message.content;
+    return {
+      ...message,
+      ...live,
+      content,
+      toolCalls: reconcileTools(message.toolCalls, live.toolCalls),
+    };
+  });
+
+  const hasEquivalentPersisted = (message: DisplayMessage) => persisted.some((candidate) => (
+    candidate.role === message.role
+    && candidate.content === message.content
+    && (message.role !== "user" || candidate.attachments?.length === message.attachments?.length)
+  ));
+  const pendingUsers = current.filter((message) => (
+    message.role === "user"
+    && message.turnId === state.turnId
+    && !hasEquivalentPersisted(message)
+  ));
+  const liveIds = new Set(state.messageIds);
+  const livePhases = current.filter((message) => (
+    liveIds.has(message.id)
+    && !persistedIds.has(message.id)
+    && !hasEquivalentPersisted(message)
+  ));
+  return [...reconciled, ...pendingUsers, ...livePhases];
+}
+
 export function createLiveMessageFlowState(
   runId = `stream-${Date.now()}`,
   turnId = `live-turn-${runId}`,

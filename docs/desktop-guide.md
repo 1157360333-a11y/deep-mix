@@ -23,11 +23,11 @@ The first launch may take longer while Electron and Vite build the main, preload
 
 1. Open the new-task view.
 2. Select or enter the target project directory.
-3. Choose a permission mode and optional route/reasoning preferences.
+3. Choose a permission mode and optional model/reasoning preferences.
 4. Add text or supported attachments.
 5. Send the task and respond to approvals in the composer area.
 
-The chosen directory becomes the runtime workspace. Local session state and checkpoints are stored under that workspace's `.deep-mix/` directory.
+The chosen directory becomes the runtime workspace. Local sessions, checkpoints, attachments, worker artifacts, and credentials are stored under `~/.deep-mix/workspaces/<workspace-id>/` by default, outside the target repository. `DEEP_MIX_HOME` overrides the user-state root.
 
 ## Session management
 
@@ -50,11 +50,11 @@ npm run desktop:build
 npm run desktop:preview
 ```
 
-The build command produces development bundles under `apps/desktop/out/`. Those outputs are ignored and are not signed installers. v1.0.0 does not include packaging, code signing, auto-update, or a distribution channel.
+The build command produces development bundles under `apps/desktop/out/`. Those outputs are ignored and are not signed installers. v1.1.0 does not include packaging, code signing, auto-update, or a distribution channel.
 
 ## Themes and zoom
 
-Desktop supports light/dark presentation and UI zoom. Theme and task preferences are local UI state. Provider keys remain in the protected profile file or environment, never in renderer code.
+Desktop supports light/dark presentation, UI zoom, configurable keyboard shortcuts, and a model-profile/settings editor. Shortcut bindings are stored in workspace settings. Provider keys cross trusted IPC only when saved and never return to renderer state, logs, exports, or ordinary tool paths.
 
 ## Troubleshooting
 

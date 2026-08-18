@@ -14,7 +14,7 @@
 - `accept` 只表示 artifact 可以进入落地环节，不代表任务最终完成。
 - `revise` 表示继续使用同一 worker session 迭代，不自动切主模型。
 - `retryWithMoreContext` 表示补充 `contextRefs` 后重试，仍然保持当前 worker 类型。
-- `fallbackToGovernor` 表示停止使用当前 worker，由 `DeepSeek` 直接接手。
+- `fallbackToGovernor` 表示停止使用当前 worker，由配置的 `governor` 槽位直接接手。
 - `continueVerification` 表示继续运行测试、读文件、比对 diff 等验证动作。
 - `abort` 表示当前任务分支终止，不再继续 worker 或落地动作。
 

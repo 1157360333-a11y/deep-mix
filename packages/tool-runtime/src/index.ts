@@ -33,6 +33,7 @@ import { PermissionLayer } from "../../safety/src/index.js";
 import { SpecialistBroker } from "../../specialist-broker/src/index.js";
 import { McpRegistry } from "../../mcp-hub/src/index.js";
 import { loadDeepMixSettingsSync } from "../../settings/src/index.js";
+import { resolveLegacyDesktopAttachmentReference } from "../../state-location/src/index.js";
 import {
   detectRuntimeCapabilities,
   RuntimeCapabilityRegistry,
@@ -71,17 +72,6 @@ interface ToolAuditLink {
 }
 
 const POST_EDIT_VERIFICATION_TOOL_NAMES = new Set<string>(["run_tests", "lint", "typecheck"]);
-
-const EXPERIMENTAL_MANAGED_PROCESS_TOOL_NAMES = new Set<string>([
-  "start_process",
-  "process_input",
-  "process_output",
-  "stop_process",
-]);
-
-const MANAGED_PROCESS_DISABLED_REASON =
-  "Managed background processes are experimental and disabled by default. " +
-  "Set experimental.managedProcesses=true only after reviewing docs/security-model.md.";
 
 export class PermissionRequiredError extends Error {
   public readonly toolName: string;
@@ -574,6 +564,8 @@ export class ToolRuntime {
     this.networkService = options.networkService ?? createDirectToolNetworkService();
     this.processManager = options.processManager ?? new ToolProcessManager({
       workspaceRoot: this.workspaceRoot,
+      stateDirectory: this.sessionStore.paths.processSessionsDir,
+      additionalCwdRoots: [this.sessionStore.paths.worktreesDir],
       environment: this.environment,
       assertSession: async (sessionId) => {
         const session = await this.sessionStore.loadSession(sessionId);
@@ -596,7 +588,6 @@ export class ToolRuntime {
       registerToolModules(this.registry, this.modules, this.moduleContext);
     }
     this.registerMcpTools();
-    this.applyExperimentalToolAvailability();
   }
 
   public async initialize(): Promise<void> {
@@ -609,7 +600,6 @@ export class ToolRuntime {
       await this.sessionStore.saveRuntimeCapabilities(snapshot);
       await initializeToolModules(this.registry, this.modules, this.moduleContext);
       await this.refreshDeclaredToolAvailability();
-      this.applyExperimentalToolAvailability();
     })().catch((error) => {
       this.initializationPromise = undefined;
       throw error;
@@ -636,18 +626,6 @@ export class ToolRuntime {
           reason: `Tool availability check failed: ${(error as Error).message}`,
         });
       }
-    }
-  }
-
-  private applyExperimentalToolAvailability(): void {
-    if (this.settings.experimental?.managedProcesses === true) return;
-    for (const toolName of EXPERIMENTAL_MANAGED_PROCESS_TOOL_NAMES) {
-      if (!this.registry.getTool(toolName)) continue;
-      this.registry.setToolAvailability(toolName, {
-        status: "unavailable",
-        available: false,
-        reason: MANAGED_PROCESS_DISABLED_REASON,
-      });
     }
   }
 
@@ -694,20 +672,42 @@ export class ToolRuntime {
       paths: {
         normalize: normalizeRelativePath,
         resolveWorkspace: (relativePath) => resolveInsideWorkspace(this.workspaceRoot, relativePath),
+        resolveState: (relativePath) => {
+          const absolutePath = path.resolve(this.sessionStore.paths.stateDir, relativePath);
+          const containment = path.relative(this.sessionStore.paths.stateDir, absolutePath);
+          if (containment === ".." || containment.startsWith(`..${path.sep}`) || path.isAbsolute(containment)) {
+            throw new Error("Runtime state path escapes the trusted workspace state root.");
+          }
+          return absolutePath;
+        },
         resolveReadable: async (refOrPath) => {
-          if (refOrPath.startsWith("artifact://tool-outputs/") || refOrPath.startsWith("file://")) {
-            const absolutePath = path.resolve(this.sessionStore.resolveToolOutputArtifactPath(refOrPath));
-            const trustedRoot = refOrPath.startsWith("file://")
-              ? this.workspaceRoot
-              : path.resolve(this.workspaceRoot, ".deep-mix", "tool-outputs");
-            if (refOrPath.startsWith("file://")) {
+          const logicalAttachmentPath = resolveLegacyDesktopAttachmentReference(
+            this.workspaceRoot,
+            refOrPath.startsWith("file://") ? refOrPath.slice("file://".length) : refOrPath,
+          );
+          if (
+            refOrPath.startsWith("artifact://tool-outputs/")
+            || refOrPath.startsWith("file://")
+            || logicalAttachmentPath
+          ) {
+            const artifactReference = logicalAttachmentPath && !refOrPath.startsWith("file://")
+              ? `file://${refOrPath}`
+              : refOrPath;
+            const absolutePath = path.resolve(this.sessionStore.resolveToolOutputArtifactPath(artifactReference));
+            const stateAttachmentPath = logicalAttachmentPath;
+            const trustedRoot = refOrPath.startsWith("artifact://tool-outputs/")
+              ? this.sessionStore.paths.toolOutputsDir
+              : stateAttachmentPath
+                ? this.sessionStore.paths.desktopAttachmentsDir
+                : this.workspaceRoot;
+            if (refOrPath.startsWith("file://") && !stateAttachmentPath) {
               const workspaceRelativePath = toWorkspaceRelativePath(this.workspaceRoot, absolutePath);
               if (isProtectedReadPath(workspaceRelativePath)) {
                 throw new Error("The requested workspace path is outside the readable sandbox because it is protected.");
               }
             }
             const realPath = await resolveRealPathInside(trustedRoot, absolutePath, "Readable artifact path");
-            if (refOrPath.startsWith("file://")) {
+            if (refOrPath.startsWith("file://") && !stateAttachmentPath) {
               const realWorkspaceRoot = await fs.realpath(this.workspaceRoot);
               const canonicalRelativePath = toWorkspaceRelativePath(realWorkspaceRoot, realPath);
               if (isProtectedReadPath(canonicalRelativePath)) {
@@ -717,9 +717,11 @@ export class ToolRuntime {
             return {
               absolutePath: realPath,
               artifactRef: refOrPath.startsWith("artifact://") ? refOrPath : undefined,
-              workspaceRelativePath: refOrPath.startsWith("file://")
-                ? toWorkspaceRelativePath(this.workspaceRoot, absolutePath)
-                : undefined,
+              workspaceRelativePath: stateAttachmentPath
+                ? (refOrPath.startsWith("file://") ? refOrPath.slice("file://".length) : refOrPath)
+                : refOrPath.startsWith("file://")
+                  ? toWorkspaceRelativePath(this.workspaceRoot, absolutePath)
+                  : undefined,
               readBytes: () => refOrPath.startsWith("artifact://tool-outputs/")
                 ? this.sessionStore.readBinaryToolOutputArtifact(refOrPath)
                 : fs.readFile(realPath),
@@ -727,7 +729,7 @@ export class ToolRuntime {
           }
           if (refOrPath.startsWith("artifact://")) {
             const absolutePath = path.resolve(this.sessionStore.resolveArtifactPath(refOrPath));
-            const trustedRoot = path.resolve(this.workspaceRoot, ".deep-mix");
+            const trustedRoot = this.sessionStore.paths.stateDir;
             const realPath = await resolveRealPathInside(trustedRoot, absolutePath, "Readable artifact path");
             return { absolutePath: realPath, artifactRef: refOrPath, readBytes: () => fs.readFile(realPath) };
           }

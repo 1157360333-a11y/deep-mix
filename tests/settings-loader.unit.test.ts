@@ -162,7 +162,7 @@ describe("deep-mix settings loader", () => {
       },
     );
     expect(fromSettings.permissionMode).toBe("auto");
-    expect(fromSettings.routeOverride).toBe("glm_coding");
+    expect(fromSettings.routeOverride).toBe("coding_worker");
 
     const fromArgs = resolveCliLaunchConfig(
       {
@@ -175,7 +175,7 @@ describe("deep-mix settings loader", () => {
       },
     );
     expect(fromArgs.permissionMode).toBe("plan");
-    expect(fromArgs.routeOverride).toBe("ds_direct");
+    expect(fromArgs.routeOverride).toBe("governor_direct");
   });
 
   it("lets governor config come from settings but keeps env overrides highest", async () => {

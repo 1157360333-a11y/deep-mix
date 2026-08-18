@@ -396,14 +396,14 @@ export function buildPhase7Recommendations(
   validateEvaluationTaskSet(taskSet);
   return {
     routeWhitelist: [
-      "DeepSeek direct: 简单补丁、单文件微调、小脚本修复。",
-      "GLM: 复杂后端实现、跨文件重构、接口改造。",
-      "Kimi: 带明确图片输入的报错截图、OCR、UI 结构提取任务。",
+      "Governor direct: 简单补丁、单文件微调、小脚本修复。",
+      "Coding Worker: 复杂后端实现、跨文件重构、接口改造。",
+      "Vision Worker: 带明确图片输入的报错截图、OCR、UI 结构提取任务。",
     ],
     routeBlacklist: [
-      "不要把简单补丁默认路由给 GLM。",
-      "不要把纯文本仓库理解或验收任务路由给 Kimi。",
-      "没有具体 image ref 的截图类请求不要自动路由给 Kimi。",
+      "不要把简单补丁默认路由给 Coding Worker。",
+      "不要把纯文本仓库理解或验收任务路由给 Vision Worker。",
+      "没有具体 image ref 的截图类请求不要自动路由给 Vision Worker。",
     ],
     manualReviewRequired: [
       "UI 解析后直接改码仍需人工或 supervisor 二次审阅。",
@@ -590,10 +590,11 @@ export function buildPhase7Artifacts(input: {
     "",
     "## 已支持能力",
     "",
-    "- DeepSeek direct 处理简单补丁、计划整理、最终验收。",
-    "- GLM 处理复杂后端实现与跨文件重构。",
-    "- Kimi 处理带明确图片输入的错误截图、OCR、UI 结构提取。",
+    "- Governor direct 处理简单补丁、计划整理、最终验收。",
+    "- Coding Worker 处理复杂后端实现与跨文件重构。",
+    "- Vision Worker 处理带明确图片输入的错误截图、OCR、UI 结构提取。",
     "- 统一保留 permission layer、checkpoint、artifact promotion、undo。",
+    "- `ds_only / ds_glm / ds_glm_kimi` 是 Phase 7 classic 历史评测模式名，不代表当前固定模型绑定。",
     "",
     "## 未支持或默认不支持",
     "",

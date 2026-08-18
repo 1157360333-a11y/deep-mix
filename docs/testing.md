@@ -26,7 +26,7 @@ npm audit
 | `npm run audit:production` | Production dependency audit at high severity |
 | `npm audit` | Full dependency audit |
 
-Phase-specific scripts remain available for focused diagnosis, for example `npm run verify:phase6`, `npm run verify:phase17`, `npm run verify:phase20`, and `npm run verify:phase21`.
+Phase-specific scripts remain available for focused diagnosis, for example `npm run verify:phase6`, `npm run verify:phase17`, `npm run verify:phase20`, `npm run verify:phase21`, and `npm run verify:phase22`.
 
 ## Why `npm test` is not the entire suite
 
@@ -39,6 +39,7 @@ The complete suite includes process lifecycle, Git worktree, shell behavior, bro
 - Shell, process, Git, filesystem boundary, or network change: `test:platform` on the supported OS.
 - Document or spreadsheet change: phase 20 format-specific tests and production bundle verification.
 - Security boundary change: phase 21 tests, full audit, and explicit review of failure-closed behavior.
+- Model profile, slot binding, capability, fallback, or settings migration change: phase 22 plus redaction and workspace-isolation coverage.
 - Desktop UI/IPC change: Desktop unit tests, `npm run check`, and `npm run desktop:build`.
 
 ## Clean-install verification
