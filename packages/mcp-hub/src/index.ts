@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
@@ -13,6 +13,11 @@ import type {
   McpServerStatus,
   McpToolDescriptor,
 } from "../../shared-schema/src/index.js";
+import {
+  resolveProjectMcpConfigPath,
+  resolveUserMcpConfigPath,
+  resolveWorkspaceStateDirectory,
+} from "../../state-location/src/index.js";
 
 export interface McpInvocationResult {
   output: string;
@@ -272,7 +277,7 @@ function createDefaultConfig(): McpServerConfigFile {
         },
         options: {
           apiBaseUrl: "https://api.github.com",
-          userAgent: "Deep-Mix/1.0",
+          userAgent: "Deep-Mix/0.1",
         },
       },
       {
@@ -325,7 +330,7 @@ async function readUrl(url: string): Promise<{ html: string; title: string }> {
 
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "Deep-Mix/1.0",
+      "User-Agent": "Deep-Mix/0.1",
     },
   });
   if (!response.ok) {
@@ -363,7 +368,7 @@ class GitHubAdapter implements McpAdapter {
 
   public constructor(private readonly entry: McpServerConfigEntry) {
     this.apiBaseUrl = String(entry.options?.apiBaseUrl ?? "https://api.github.com").replace(/\/+$/, "");
-    this.userAgent = String(entry.options?.userAgent ?? "Deep-Mix/1.0");
+    this.userAgent = String(entry.options?.userAgent ?? "Deep-Mix/0.1");
   }
 
   public async start(): Promise<McpServerStatus> {
@@ -510,7 +515,12 @@ class PlaywrightAdapter implements McpAdapter {
     private readonly workspaceRoot: string,
     private readonly entry: McpServerConfigEntry,
   ) {
-    this.screenshotDir = String(entry.options?.screenshotDir ?? ".deep-mix/mcp-artifacts/playwright");
+    const configuredScreenshotDir = typeof entry.options?.screenshotDir === "string"
+      ? entry.options.screenshotDir.trim()
+      : "";
+    this.screenshotDir = !configuredScreenshotDir || configuredScreenshotDir === ".deep-mix/mcp-artifacts/playwright"
+      ? path.join(resolveWorkspaceStateDirectory(workspaceRoot), "mcp-artifacts", "playwright")
+      : resolveRelativePath(workspaceRoot, configuredScreenshotDir);
     this.browserCommand =
       typeof entry.options?.browserCommand === "string" && entry.options.browserCommand.trim()
         ? entry.options.browserCommand.trim()
@@ -555,7 +565,7 @@ class PlaywrightAdapter implements McpAdapter {
         serverName: this.entry.name,
         serverType: "playwright",
         name: "mcp_playwright_capture_screenshot",
-        description: "Capture a page screenshot through the Playwright MCP server and store it under .deep-mix/mcp-artifacts.",
+        description: "Capture a page screenshot through the Playwright MCP server and store it in the user-level workspace state directory.",
         inputSchema: {
           type: "object",
           additionalProperties: false,
@@ -618,7 +628,7 @@ class PlaywrightAdapter implements McpAdapter {
     const width = Math.round(args.width ?? 1280);
     const height = Math.round(args.height ?? 720);
     const outputName = (args.outputName?.trim() || `capture-${Date.now()}`).replace(/[^a-z0-9-_]+/gi, "-");
-    const outputDir = resolveRelativePath(this.workspaceRoot, this.screenshotDir);
+    const outputDir = this.screenshotDir;
     const outputPath = path.join(outputDir, `${outputName}.png`);
     await fs.mkdir(outputDir, { recursive: true });
 
@@ -727,14 +737,16 @@ export class McpRegistry {
       return;
     }
 
-    const configPath = path.join(this.workspaceRoot, ".deep-mix", "mcp", "servers.json");
-    await fs.mkdir(path.dirname(configPath), { recursive: true });
-    if (!(await exists(configPath))) {
-      await fs.writeFile(configPath, JSON.stringify(createDefaultConfig(), null, 2), "utf8");
-    }
+    const configPath = [
+      resolveProjectMcpConfigPath(this.workspaceRoot),
+      resolveUserMcpConfigPath(),
+    ].find((candidate) => existsSync(candidate));
+    const configSource = configPath ?? "<built-in-default>";
 
     try {
-      const config = JSON.parse(await fs.readFile(configPath, "utf8")) as McpServerConfigFile;
+      const config = configPath
+        ? JSON.parse(await fs.readFile(configPath, "utf8")) as McpServerConfigFile
+        : createDefaultConfig();
       if (!Array.isArray(config.servers)) {
         throw new Error("MCP config requires a servers array.");
       }
@@ -786,7 +798,7 @@ export class McpRegistry {
           }
         } catch (error) {
           const message = safeRemoteErrorMessage(error, this.workspaceRoot);
-          this.errors.push(`${configPath}: ${message}`);
+          this.errors.push(`${configSource}: ${message}`);
           if (
             typeof entry.name === "string" &&
             !this.statuses.some((status) => status.name === entry.name) &&
@@ -806,7 +818,7 @@ export class McpRegistry {
         }
       }
     } catch {
-      this.errors.push(`${configPath}: MCP server configuration could not be loaded.`);
+      this.errors.push(`${configSource}: MCP server configuration could not be loaded.`);
     }
 
     this.initialized = true;

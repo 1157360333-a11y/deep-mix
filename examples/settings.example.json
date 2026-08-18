@@ -1,33 +1,30 @@
 {
-  "version": 1,
-  "defaults": {
-    "permissionMode": "auto"
+  "version": 2,
+  "revision": 0,
+  "models": {
+    "preset": "classic",
+    "slots": {
+      "governor": {
+        "primary": { "profile": "deepseek_governor" },
+        "fallbacks": [],
+        "fallbackPolicy": { "enabled": false, "on": ["configuration", "capability", "connection", "rate_limit", "timeout", "provider_error", "invalid_response"] },
+        "requirements": { "textInput": true, "streaming": true, "nativeToolCalling": true }
+      },
+      "coding": {
+        "primary": { "profile": "glm_coding_worker" },
+        "fallbacks": [],
+        "fallbackPolicy": { "enabled": false, "on": ["configuration", "capability", "connection", "rate_limit", "timeout", "provider_error", "invalid_response"], "allowGovernorDirectFallback": true },
+        "requirements": { "textInput": true, "structuredOutput": true }
+      },
+      "vision": {
+        "primary": { "profile": "kimi_vision" },
+        "fallbacks": [],
+        "fallbackPolicy": { "enabled": false, "on": ["configuration", "capability", "connection", "rate_limit", "timeout", "provider_error", "invalid_response"], "allowGovernorDirectFallback": true },
+        "requirements": { "textInput": true, "imageInput": true, "structuredOutput": true }
+      }
+    }
   },
-  "governor": {
-    "profile": "deepseek_governor",
-    "stream": true,
-    "thinkingMode": "adaptive",
-    "replyStyle": "pragmatic"
-  },
-  "codingWorker": {
-    "profile": "glm_coding_worker"
-  },
-  "visionWorker": {
-    "profile": "kimi_vision"
-  },
-  "git": {
-    "protectedBranches": [
-      "main",
-      "master"
-    ],
-    "worktreeRoots": [
-      ".deep-mix/worktrees"
-    ]
-  },
-  "codeIntelligence": {
-    "defaultSemanticProvider": "local"
-  },
-  "experimental": {
-    "managedProcesses": false
-  }
+  "defaults": { "permissionMode": "auto" },
+  "git": { "protectedBranches": ["main", "master"], "worktreeRoots": [".deep-mix/worktrees"] },
+  "codeIntelligence": { "defaultSemanticProvider": "local" }
 }

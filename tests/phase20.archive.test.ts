@@ -798,10 +798,10 @@ describe("phase 20 archive_manage", () => {
       getFileNameLowLevel?: unknown;
     };
     const yauzlPackage = runtimeRequire("yauzl/package.json") as { version: string };
-    const normalizedYauzlPath = normalizeTestPath(resolvedYauzl);
-    const relativeYauzlPath = normalizeTestPath(path.relative(process.cwd(), resolvedYauzl));
-    expect(normalizedYauzlPath).toContain("/node_modules/yauzl/");
-    expect(relativeYauzlPath).not.toMatch(/^\.\.(?:\/|$)/u);
+    const normalizedResolvedYauzl = normalizeTestPath(path.resolve(resolvedYauzl));
+    const normalizedRepositoryRoot = `${normalizeTestPath(path.resolve(process.cwd()))}/`;
+    expect(normalizedResolvedYauzl.startsWith(normalizedRepositoryRoot)).toBe(true);
+    expect(normalizedResolvedYauzl).toMatch(/\/node_modules\/yauzl\//u);
     expect(yauzlPackage.version).toBe("3.4.0");
     expect(yauzl).toMatchObject({
       fromBuffer: expect.any(Function),

@@ -1,10 +1,11 @@
 import { normalizeRouteOverride } from "../../../packages/route-resolver/src/index.js";
 import { isPermissionMode, isRouteTarget, loadDeepMixSettingsSync } from "../../../packages/settings/src/index.js";
+import type { SemanticRouteTarget } from "../../../packages/shared-schema/src/index.js";
 import type { ParsedArgs } from "./cli-args.js";
 
 export interface ResolvedCliLaunchConfig {
   permissionMode: "plan" | "edit" | "auto" | "danger-full-access";
-  routeOverride?: "ds_direct" | "glm_coding" | "kimi_vision";
+  routeOverride?: SemanticRouteTarget;
 }
 
 export function resolveCliLaunchConfig(

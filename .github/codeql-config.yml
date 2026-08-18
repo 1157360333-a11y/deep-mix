@@ -1,0 +1,4 @@
+name: Deep-Mix CodeQL configuration
+
+paths-ignore:
+  - vendor/**

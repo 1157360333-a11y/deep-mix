@@ -18,7 +18,7 @@ interface SelectMenuProps<T extends string> {
   disabled?: boolean;
   placement?: "top" | "bottom";
   size?: "compact" | "regular";
-  variant?: "default" | "reasoning";
+  variant?: "default" | "reasoning" | "minimal";
   ariaLabel: string;
   className?: string;
 }
@@ -114,22 +114,31 @@ export function SelectMenu<T extends string>({
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => commit(option)}
               >
-                <span className="select-menu__option-icon">
-                  {option.depthLevel
-                    ? <ReasoningDepthGlyph level={option.depthLevel} size={18} />
-                    : option.icon
-                      ? <Icon name={option.icon} size={15} />
-                      : <span className="select-menu__option-dot" />}
-                </span>
-                <span className="select-menu__option-copy">
-                  <strong>{option.label}</strong>
-                  {option.description && <small>{option.description}</small>}
-                  {option.depthLevel && (
-                    <span className="select-menu__depth-meter" aria-hidden="true">
-                      {[1, 2, 3].map((segment) => <i className={segment <= option.depthLevel! ? "is-live" : ""} key={segment} />)}
+                {variant === "minimal" ? (
+                  <>
+                    {option.icon && <Icon name={option.icon} size={14} className="select-menu__option-leading" />}
+                    <span className="select-menu__option-label">{option.label}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="select-menu__option-icon">
+                      {option.depthLevel
+                        ? <ReasoningDepthGlyph level={option.depthLevel} size={18} />
+                        : option.icon
+                          ? <Icon name={option.icon} size={15} />
+                          : <span className="select-menu__option-dot" />}
                     </span>
-                  )}
-                </span>
+                    <span className="select-menu__option-copy">
+                      <strong>{option.label}</strong>
+                      {option.description && <small>{option.description}</small>}
+                      {option.depthLevel && (
+                        <span className="select-menu__depth-meter" aria-hidden="true">
+                          {[1, 2, 3].map((segment) => <i className={segment <= option.depthLevel! ? "is-live" : ""} key={segment} />)}
+                        </span>
+                      )}
+                    </span>
+                  </>
+                )}
                 {option.value === value && <Icon name="check" size={14} />}
               </button>
             ))}

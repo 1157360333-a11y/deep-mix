@@ -4,7 +4,6 @@ import type {
   DiagnosticReportRecord,
   PermissionMode,
   PlanItem,
-  RouteTarget,
   SessionRecord,
   ToolOutputArtifact,
   ToolProcessSession,
@@ -14,6 +13,7 @@ import type {
 } from "@deep-mix/shared-schema";
 import type {
   AttachmentDescriptor,
+  DesktopModelProfileSaveInput,
   DesktopSettings,
   DesktopSettingsPatch,
   WorkerStatusView,
@@ -23,11 +23,13 @@ import { Icon } from "./components/Icons";
 import { InputBar } from "./components/InputBar";
 import { RightPanel } from "./components/RightPanel";
 import { SessionSidebar, type ProjectAction, type SessionAction } from "./components/SessionSidebar";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { StructuredQuestionPanel } from "./components/StructuredQuestionPanel";
 import { TopBar } from "./components/TopBar";
 import { buildDisplayHistory } from "./display-history";
 import {
   createLiveMessageFlowState,
+  reconcilePersistedLiveMessages,
   reduceLiveMessageFlow,
   type LiveMessageFlowEvent,
 } from "./live-message-flow";
@@ -38,6 +40,8 @@ import {
   type ProjectPreferences,
 } from "./project-state";
 import { getRuntime } from "./runtime";
+import { getSettingsSuccessToast } from "./settings-notification-policy";
+import { DEFAULT_DESKTOP_SHORTCUTS, shortcutFromKeyboardEvent } from "@shared/shortcut-config";
 import type { DisplayMessage, InspectorPanel, ThemeMode } from "./types";
 
 const runtime = getRuntime();
@@ -114,17 +118,19 @@ export default function App() {
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const [activePanel, setActivePanel] = useState<InspectorPanel>("context");
   const [busy, setBusy] = useState(false);
+  const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
   const [liveDurationMs, setLiveDurationMs] = useState(0);
   const [draft, setDraft] = useState("");
+  // 对话目标（预留接口）：后端接线前仅保存在界面状态中
+  const [goal, setGoal] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<AttachmentDescriptor[]>([]);
   const [theme, setTheme] = useState<ThemeMode>(() => (localStorage.getItem("deep-mix-theme") as ThemeMode) || "light");
   const [leftVisible, setLeftVisible] = useState(() => localStorage.getItem("deep-mix-left-visible") !== "false");
   const [rightVisible, setRightVisible] = useState(() => localStorage.getItem("deep-mix-right-visible") !== "false");
   const [leftWidth, setLeftWidth] = useState(() => readStoredNumber("deep-mix-left-width", 278));
   const [rightWidth, setRightWidth] = useState(() => readStoredNumber("deep-mix-right-width", 360));
-  const [commandOpen, setCommandOpen] = useState(false);
-  const [commandQuery, setCommandQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [zoomFactor, setZoomFactor] = useState(1);
   const [zoomVisible, setZoomVisible] = useState(false);
@@ -138,6 +144,9 @@ export default function App() {
   const [sessionDialog, setSessionDialog] = useState<{ type: "rename" | "delete"; session: SessionRecord; value: string } | null>(null);
   const [projectDialog, setProjectDialog] = useState<{ type: "rename" | "remove"; root: string; name: string; value: string } | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  const busyRef = useRef(false);
+  const busySessionIdRef = useRef<string | null>(null);
+  const busyOriginSessionIdRef = useRef<string | null>(null);
   const liveMessageFlowRef = useRef(createLiveMessageFlowState());
   const workspaceRootsRef = useRef(recentWorkspaces);
   const projectsWereStoredRef = useRef(localStorage.getItem(PROJECTS_STORAGE_KEY) !== null);
@@ -147,6 +156,22 @@ export default function App() {
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  const archivedGroups = useMemo(() => {
+    const byRoot = new Map<string, SessionRecord[]>();
+    for (const session of sessions) {
+      if (!session.archivedAt) continue;
+      const list = byRoot.get(session.workspaceRoot) ?? [];
+      list.push(session);
+      byRoot.set(session.workspaceRoot, list);
+    }
+    return [...byRoot.entries()]
+      .map(([root, groupSessions]) => ({
+        root,
+        name: projectPreferences[root]?.name ?? root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? root,
+        sessions: groupSessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [projectPreferences, sessions]);
   const toolOutputArtifacts = useMemo(() => {
     const byUri = new Map<string, ToolOutputArtifact>();
     for (const message of messages) {
@@ -156,6 +181,37 @@ export default function App() {
     }
     return [...byUri.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }, [messages]);
+
+  const beginBusyRun = useCallback((sessionId: string | null) => {
+    busyRef.current = true;
+    busyOriginSessionIdRef.current = activeSessionIdRef.current;
+    busySessionIdRef.current = sessionId;
+    setBusySessionId(sessionId);
+    setBusy(true);
+    setBusyStartedAt(Date.now());
+  }, []);
+
+  const finishBusyRun = useCallback(() => {
+    busyRef.current = false;
+    busySessionIdRef.current = null;
+    busyOriginSessionIdRef.current = null;
+    setBusySessionId(null);
+    setBusy(false);
+    setBusyStartedAt(null);
+  }, []);
+
+  const bindBusySession = useCallback((sessionId: string) => {
+    if (!busyRef.current || sessionId === "unknown") return false;
+    if (!busySessionIdRef.current) {
+      busySessionIdRef.current = sessionId;
+      setBusySessionId(sessionId);
+      if (activeSessionIdRef.current === busyOriginSessionIdRef.current) {
+        activeSessionIdRef.current = sessionId;
+        setActiveSessionId(sessionId);
+      }
+    }
+    return busySessionIdRef.current === sessionId;
+  }, []);
 
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   useEffect(() => {
@@ -352,14 +408,8 @@ export default function App() {
     await beginTaskInWorkspace(target);
   }, [beginTaskInWorkspace, newWorkspacePath]);
 
-  const selectStreamSession = useCallback((sessionId: string) => {
-    if (sessionId !== "unknown" && sessionId !== activeSessionIdRef.current) {
-      activeSessionIdRef.current = sessionId;
-      setActiveSessionId(sessionId);
-    }
-  }, []);
-
-  const projectLiveMessageEvent = useCallback((event: LiveMessageFlowEvent) => {
+  const projectLiveMessageEvent = useCallback((sessionId: string, event: LiveMessageFlowEvent) => {
+    if (sessionId !== activeSessionIdRef.current) return;
     setMessages((current) => {
       const projected = reduceLiveMessageFlow(current, liveMessageFlowRef.current, event);
       liveMessageFlowRef.current = projected.state;
@@ -370,65 +420,78 @@ export default function App() {
   useEffect(() => {
     const unsubscribers = [
       runtime.onStreamText((event) => {
-        selectStreamSession(event.sessionId);
-        projectLiveMessageEvent({ type: "text", chunk: event.chunk });
+        if (bindBusySession(event.sessionId)) {
+          projectLiveMessageEvent(event.sessionId, { type: "text", chunk: event.chunk });
+        }
       }),
       runtime.onToolBatchStart((event) => {
-        selectStreamSession(event.sessionId);
-        projectLiveMessageEvent({
-          type: "tool_batch_start",
-          batchId: event.assistantMessageId,
-          toolCalls: event.toolCalls,
-        });
+        if (bindBusySession(event.sessionId)) {
+          projectLiveMessageEvent(event.sessionId, {
+            type: "tool_batch_start",
+            batchId: event.assistantMessageId,
+            toolCalls: event.toolCalls,
+          });
+        }
       }),
       runtime.onToolStart((event) => {
-        selectStreamSession(event.sessionId);
-        projectLiveMessageEvent({
-          type: "tool_start",
-          toolCall: event.toolCall,
-          displayName: readToolDisplayName(event.toolCall),
-        });
+        if (bindBusySession(event.sessionId)) {
+          projectLiveMessageEvent(event.sessionId, {
+            type: "tool_start",
+            toolCall: event.toolCall,
+            displayName: readToolDisplayName(event.toolCall),
+          });
+        }
       }),
       runtime.onToolEnd((event) => {
-        selectStreamSession(event.sessionId);
-        projectLiveMessageEvent({
-          type: "tool_end",
-          result: event.result,
-          displayName: readToolDisplayName(event.result),
-        });
+        if (bindBusySession(event.sessionId)) {
+          projectLiveMessageEvent(event.sessionId, {
+            type: "tool_end",
+            result: event.result,
+            displayName: readToolDisplayName(event.result),
+          });
+        }
         if (event.sessionId === activeSessionIdRef.current && WORKER_LIFECYCLE_TOOLS.has(event.result.toolName)) {
           void runtime.refreshWorkers(event.sessionId).catch((error) => setToast((error as Error).message));
         }
       }),
-      runtime.onPlanUpdate((event) => setPlanItems(event.planItems)),
+      runtime.onPlanUpdate((event) => {
+        if (event.sessionId === activeSessionIdRef.current) setPlanItems(event.planItems);
+      }),
       runtime.onApprovalRequested((event) => {
-        setApprovals((current) => [...current.filter((entry) => entry.requestKey !== event.requestKey), event]);
-        setBusy(false);
-        setBusyStartedAt(null);
+        if (event.sessionId === activeSessionIdRef.current) {
+          setApprovals((current) => [...current.filter((entry) => entry.requestKey !== event.requestKey), event]);
+          projectLiveMessageEvent(event.sessionId, { type: "complete" });
+        }
+        if (event.sessionId === busySessionIdRef.current) finishBusyRun();
       }),
       runtime.onUserInputRequested((event) => {
         if (!activeSessionIdRef.current || event.sessionId === activeSessionIdRef.current) {
           setPendingUserInput(event);
           if (event.mode === "blocking") {
-            setBusy(false);
-            setBusyStartedAt(null);
+            projectLiveMessageEvent(event.sessionId, { type: "complete" });
+            if (event.sessionId === busySessionIdRef.current) finishBusyRun();
           }
         }
       }),
-      runtime.onWorkerStatus((event) => setWorkers((current) => {
-        const index = current.findIndex((entry) => entry.workerSessionId === event.workerSessionId);
-        if (index < 0) return [event, ...current];
-        const next = [...current];
-        next[index] = event;
-        return next;
-      })),
-      runtime.onWorkerArtifact((event) => setArtifacts((current) => current.some((entry) => entry.artifactId === event.artifactId) ? current : [event, ...current])),
-      runtime.onDiagnostics(setDiagnostics),
+      runtime.onWorkerStatus((event) => {
+        if (event.parentSessionId && event.parentSessionId !== activeSessionIdRef.current) return;
+        setWorkers((current) => {
+          const index = current.findIndex((entry) => entry.workerSessionId === event.workerSessionId);
+          if (index < 0) return [event, ...current];
+          const next = [...current];
+          next[index] = event;
+          return next;
+        });
+      }),
+      runtime.onWorkerArtifact((event) => {
+        if (event.parentSessionId && event.parentSessionId !== activeSessionIdRef.current) return;
+        setArtifacts((current) => current.some((entry) => entry.artifactId === event.artifactId) ? current : [event, ...current]);
+      }),
+      runtime.onDiagnostics((event) => {
+        if (event.sessionId === activeSessionIdRef.current) setDiagnostics(event);
+      }),
       runtime.onSessionUpdated((event) => {
-        if (event.sessionId && event.sessionId !== "unknown" && !activeSessionIdRef.current) {
-          activeSessionIdRef.current = event.sessionId;
-          setActiveSessionId(event.sessionId);
-        }
+        bindBusySession(event.sessionId);
         if (event.sessionId === activeSessionIdRef.current && event.status && event.status !== "ask_permission") {
           setApprovals([]);
         }
@@ -450,7 +513,50 @@ export default function App() {
       }),
     ];
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
-  }, [projectLiveMessageEvent, selectStreamSession]);
+  }, [bindBusySession, finishBusyRun, projectLiveMessageEvent]);
+
+  useEffect(() => {
+    const sessionId = activeSessionId;
+    if (!busy || !sessionId || busySessionId !== sessionId) return;
+    let cancelled = false;
+    let refreshing = false;
+    const reconcile = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const detail = await runtime.loadSession(sessionId);
+        if (
+          cancelled
+          || activeSessionIdRef.current !== sessionId
+          || busySessionIdRef.current !== sessionId
+        ) return;
+        const persisted = buildDisplayHistory(detail.messages, detail.turns);
+        setMessages((current) => reconcilePersistedLiveMessages(
+          persisted,
+          current,
+          liveMessageFlowRef.current,
+        ));
+        setPlanItems(detail.session.planItems ?? []);
+        setSessions((current) => {
+          const index = current.findIndex((entry) => entry.sessionId === sessionId);
+          if (index < 0) return [detail.session, ...current];
+          const next = [...current];
+          next[index] = detail.session;
+          return next;
+        });
+      } catch {
+        // IPC callbacks remain the primary live source; the snapshot is compensation only.
+      } finally {
+        refreshing = false;
+      }
+    };
+    void reconcile();
+    const timer = window.setInterval(() => void reconcile(), 800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSessionId, busy, busySessionId]);
 
   const appendLocalMessage = useCallback((content: string, role: "assistant" | "status" = "assistant") => {
     const id = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -537,7 +643,7 @@ export default function App() {
     }
     if (name === "/compact") {
       if (!session) return appendLocalMessage("当前没有可压缩的会话。", "status");
-      setBusy(true);
+      beginBusyRun(session.sessionId);
       try {
         const result = await runtime.compactSession(session.sessionId);
         if (result.compacted) {
@@ -549,7 +655,7 @@ export default function App() {
       } catch (error) {
         appendLocalMessage(`压缩失败：${(error as Error).message}`, "status");
       } finally {
-        setBusy(false);
+        finishBusyRun();
       }
       return;
     }
@@ -561,7 +667,7 @@ export default function App() {
         `- **状态：** ${sessionStatusLabel(session.status)}`,
         `- **工作区：** \`${settings?.workspaceRoot ?? session.workspaceRoot}\``,
         `- **权限：** ${settings?.permissionMode ?? "—"}`,
-        `- **路由：** ${settings?.routeOverride ?? "自动"}`,
+        "- **路由：** Mix 自动路由",
         `- **思考深度：** ${settings?.reasoningEffort ?? "—"}`,
       ].join("\n") : "当前没有活动会话。", session ? "assistant" : "status");
       return;
@@ -591,10 +697,11 @@ export default function App() {
       return;
     }
     appendLocalMessage(`未知命令：\`${command}\`\n\n输入 \`/help\` 查看可用命令。`, "status");
-  }, [appendLocalMessage, applyZoom, handleCopyText, handleExport, handleUndo, loadSession, openNewTask, refreshSessions, sessions, settings]);
+  }, [appendLocalMessage, applyZoom, beginBusyRun, finishBusyRun, handleCopyText, handleExport, handleUndo, loadSession, openNewTask, refreshSessions, sessions, settings]);
 
   const handleSend = useCallback(async () => {
     if (busy || approvals.length > 0 || pendingUserInput?.mode === "blocking") return;
+    const requestedSessionId = activeSessionIdRef.current;
     const prompt = draft.trim() || "请分析我添加的附件，并给出下一步可执行结果。";
     if (!prompt && attachments.length === 0) return;
     setDraft("");
@@ -615,26 +722,33 @@ export default function App() {
       timestamp: new Date().toISOString(),
       ...(outgoingAttachments.length > 0 ? { attachments: outgoingAttachments } : {}),
     }]);
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    beginBusyRun(requestedSessionId);
     const targetWorkspaceRoot = activeSession?.workspaceRoot ?? composerWorkspaceRoot ?? settings?.workspaceRoot;
     try {
-      await runtime.sendPrompt({
+      const response = await runtime.sendPrompt({
         sessionId: activeSessionIdRef.current ?? undefined,
         workspaceRoot: targetWorkspaceRoot,
         prompt,
-        routeOverride: settings?.routeOverride,
         attachments: outgoingAttachments,
       });
       const nextSessions = await refreshSessions();
-      const selectedId = activeSessionIdRef.current
+      const selectedId = response.sessionId
+        ?? requestedSessionId
         ?? nextSessions.find((session) => session.workspaceRoot === targetWorkspaceRoot)?.sessionId;
       if (selectedId) {
         const detail = await runtime.loadSession(selectedId);
         if (detail?.session) {
-          setPlanItems(detail.session.planItems);
-          setApprovals(detail.approvals);
-          setPendingUserInput(detail.pendingUserInput ?? null);
+          const shouldDisplay = activeSessionIdRef.current === selectedId
+            || (!requestedSessionId && !activeSessionIdRef.current);
+          if (shouldDisplay) {
+            activeSessionIdRef.current = selectedId;
+            setActiveSessionId(selectedId);
+            setMessages(buildDisplayHistory(detail.messages, detail.turns));
+            liveMessageFlowRef.current = createLiveMessageFlowState();
+            setPlanItems(detail.session.planItems);
+            setApprovals(detail.approvals);
+            setPendingUserInput(detail.pendingUserInput ?? null);
+          }
           setSessions((current) => current.map((entry) => entry.sessionId === selectedId ? detail.session : entry));
         }
       }
@@ -646,18 +760,17 @@ export default function App() {
       setMessages((current) => [...current, { id: `error-${Date.now()}`, role: "status", content: (error as Error).message, timestamp: new Date().toISOString() }]);
       setToast("任务执行失败，请查看运行状态");
     } finally {
-      projectLiveMessageEvent({ type: "complete" });
-      setBusy(false);
-      setBusyStartedAt(null);
+      const runSessionId = busySessionIdRef.current;
+      if (runSessionId) projectLiveMessageEvent(runSessionId, { type: "complete" });
+      finishBusyRun();
     }
-  }, [activeSession?.workspaceRoot, approvals.length, attachments, busy, composerWorkspaceRoot, draft, executeSlashCommand, pendingUserInput, projectLiveMessageEvent, refreshSessions, settings?.routeOverride, settings?.workspaceRoot]);
+  }, [activeSession?.workspaceRoot, approvals.length, attachments, beginBusyRun, busy, composerWorkspaceRoot, draft, executeSlashCommand, finishBusyRun, pendingUserInput, projectLiveMessageEvent, refreshSessions, settings?.workspaceRoot]);
 
   const handleUserInputResponse = useCallback(async (answers?: UserInputAnswer[], cancel = false) => {
     const request = pendingUserInput;
     if (!request || busy) return;
     setPendingUserInput(null);
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    beginBusyRun(request.sessionId);
     liveMessageFlowRef.current = createLiveMessageFlowState(undefined, request.turnId);
     try {
       await runtime.respondToUserInput({
@@ -679,21 +792,19 @@ export default function App() {
       }]);
       setToast("回答未提交，请检查后重试");
     } finally {
-      projectLiveMessageEvent({ type: "complete" });
-      setBusy(false);
-      setBusyStartedAt(null);
+      projectLiveMessageEvent(request.sessionId, { type: "complete" });
+      finishBusyRun();
     }
-  }, [busy, loadSession, pendingUserInput, projectLiveMessageEvent, refreshSessions]);
+  }, [beginBusyRun, busy, finishBusyRun, loadSession, pendingUserInput, projectLiveMessageEvent, refreshSessions]);
 
   const handleStop = useCallback(async () => {
-    const sessionId = activeSessionIdRef.current;
+    const sessionId = busySessionIdRef.current ?? activeSessionIdRef.current;
     if (!sessionId) return;
     await runtime.interruptSession(sessionId);
-    projectLiveMessageEvent({ type: "complete" });
-    setBusy(false);
-    setBusyStartedAt(null);
+    projectLiveMessageEvent(sessionId, { type: "complete" });
+    finishBusyRun();
     setToast("当前任务已停止");
-  }, [projectLiveMessageEvent]);
+  }, [finishBusyRun, projectLiveMessageEvent]);
 
   const handleStopManagedProcess = useCallback(async (processSessionId: string) => {
     const sessionId = activeSessionIdRef.current;
@@ -723,8 +834,7 @@ export default function App() {
 
   const handleResolveApproval = useCallback(async (approval: ApprovalRecord, persistence: "allow_once" | "allow_session" | "deny") => {
     setApprovals((current) => current.filter((entry) => entry.requestKey !== approval.requestKey));
-    setBusy(true);
-    setBusyStartedAt(Date.now());
+    beginBusyRun(approval.sessionId);
     try {
       await runtime.resolveApproval({
         sessionId: approval.sessionId,
@@ -738,25 +848,50 @@ export default function App() {
       setApprovals(detail?.approvals ?? []);
       setToast(persistence === "deny" ? "已拒绝该操作" : "已批准，任务继续执行");
       await refreshSessions();
+      if (activeSessionIdRef.current === approval.sessionId) {
+        await loadSession(approval.sessionId);
+      }
     } catch (error) {
       setToast((error as Error).message);
       const detail = await runtime.loadSession(approval.sessionId);
       setApprovals(detail?.approvals ?? []);
     } finally {
-      projectLiveMessageEvent({ type: "complete" });
-      setBusy(false);
-      setBusyStartedAt(null);
+      projectLiveMessageEvent(approval.sessionId, { type: "complete" });
+      finishBusyRun();
     }
-  }, [projectLiveMessageEvent, refreshSessions]);
+  }, [beginBusyRun, finishBusyRun, loadSession, projectLiveMessageEvent, refreshSessions]);
 
   const updateSettings = useCallback(async (patch: DesktopSettingsPatch) => {
     try {
       const targetRoot = activeSession?.workspaceRoot ?? composerWorkspaceRoot ?? settings?.workspaceRoot;
       setSettings(await runtime.updateSettings(patch, targetRoot));
-      setToast("设置已保存并应用");
+      const successToast = getSettingsSuccessToast(patch);
+      if (successToast) setToast(successToast);
     } catch (error) {
       setToast(`设置未保存：${(error as Error).message}`);
     }
+  }, [activeSession?.workspaceRoot, composerWorkspaceRoot, settings?.workspaceRoot]);
+
+  const saveModelProfile = useCallback(async (input: DesktopModelProfileSaveInput) => {
+    const targetRoot = activeSession?.workspaceRoot ?? composerWorkspaceRoot ?? settings?.workspaceRoot;
+    try {
+      setSettings(await runtime.saveModelProfile(input, targetRoot));
+      setToast(`已保存并切换 ${input.slot}：${input.profileId}`);
+    } catch (error) {
+      setToast(`模型接入未保存：${(error as Error).message}`);
+      throw error;
+    }
+  }, [activeSession?.workspaceRoot, composerWorkspaceRoot, settings?.workspaceRoot]);
+
+  const probeModel = useCallback(async (profileId: string) => {
+    const targetRoot = activeSession?.workspaceRoot ?? composerWorkspaceRoot ?? settings?.workspaceRoot;
+    const result = await runtime.probeModel(profileId, targetRoot);
+    setToast(result.skipped
+      ? `连接测试已跳过：${profileId} 缺少凭据`
+      : result.ok
+        ? `连接测试通过：${profileId} (${result.latencyMs ?? 0} ms)`
+        : `连接测试失败：${profileId} ${result.redactedError ?? "provider_failure"}`);
+    return result;
   }, [activeSession?.workspaceRoot, composerWorkspaceRoot, settings?.workspaceRoot]);
 
   const handlePickAttachments = useCallback(async () => {
@@ -963,44 +1098,37 @@ export default function App() {
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) {
-        if (event.key === "Escape") {
-          setCommandOpen(false);
+      const shortcut = shortcutFromKeyboardEvent(event);
+      const activeShortcuts = settings?.shortcuts ?? DEFAULT_DESKTOP_SHORTCUTS;
+      const action = shortcut
+        ? (Object.entries(activeShortcuts).find(([, binding]) => binding === shortcut)?.[0])
+        : undefined;
+      if (action && action !== "sendMessage" && action !== "newLine") {
+        event.preventDefault();
+        if (action === "stopTask") void handleStop();
+        if (action === "dismissOverlay") {
+          setSettingsOpen(false);
           setNewTaskOpen(false);
           setSessionDialog(null);
           setProjectDialog(null);
         }
+        if (action === "newTask") openNewTask();
+        if (action === "toggleLeftSidebar") setLeftVisible((value) => !value);
+        if (action === "toggleRightPanel") setRightVisible((value) => !value);
+        if (action === "focusComposer") document.getElementById("deep-mix-composer")?.focus();
+        if (action === "zoomIn") void applyZoom("in");
+        if (action === "zoomOut") void applyZoom("out");
+        if (action === "resetZoom") void applyZoom("reset");
         return;
       }
-      const key = event.key.toLowerCase();
-      if (key === "n") { event.preventDefault(); openNewTask(); }
-      if (key === "k") { event.preventDefault(); setCommandOpen(true); setCommandQuery(""); }
-      if (key === "b" && event.shiftKey) { event.preventDefault(); setRightVisible((value) => !value); }
-      else if (key === "b") { event.preventDefault(); setLeftVisible((value) => !value); }
-      if (key === "l") { event.preventDefault(); document.getElementById("deep-mix-composer")?.focus(); }
-      if (key === "+" || key === "=") { event.preventDefault(); void applyZoom("in"); }
-      if (key === "-") { event.preventDefault(); void applyZoom("out"); }
-      if (key === "0") { event.preventDefault(); void applyZoom("reset"); }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [applyZoom, openNewTask]);
-
-  const commandItems = useMemo(() => [
-    { id: "new", label: "新建任务并选择工作目录", hint: "Ctrl N", icon: "plus" as const, action: openNewTask },
-    { id: "focus", label: "聚焦输入框", hint: "Ctrl L", icon: "command" as const, action: () => document.getElementById("deep-mix-composer")?.focus() },
-    { id: "context", label: "查看上下文使用", hint: "/context", icon: "context" as const, action: () => void executeSlashCommand("/context") },
-    { id: "compact", label: "压缩会话上下文", hint: "/compact", icon: "archive" as const, action: () => void executeSlashCommand("/compact") },
-    { id: "plugins", label: "管理插件", hint: "", icon: "plugin" as const, action: () => { setActivePanel("plugins"); setRightVisible(true); } },
-    { id: "export", label: "导出当前任务", hint: "/export", icon: "download" as const, action: handleExport },
-    { id: "undo", label: "撤销到最近检查点", hint: "/undo", icon: "undo" as const, action: handleUndo },
-    { id: "zoom-in", label: "放大界面", hint: "Ctrl +", icon: "zoom-in" as const, action: () => void applyZoom("in") },
-    { id: "zoom-out", label: "缩小界面", hint: "Ctrl -", icon: "zoom-out" as const, action: () => void applyZoom("out") },
-    { id: "settings", label: "打开设置", hint: "", icon: "settings" as const, action: () => { setActivePanel("settings"); setRightVisible(true); } },
-  ].filter((item) => item.label.toLowerCase().includes(commandQuery.toLowerCase())), [applyZoom, commandQuery, executeSlashCommand, handleExport, handleUndo, openNewTask]);
+  }, [applyZoom, handleStop, openNewTask, settings?.shortcuts]);
 
   const completedDuration = activeSession?.latestTaskDuration?.durationMs;
-  const shownDuration = busy ? liveDurationMs : completedDuration ?? 0;
+  const activeSessionBusy = busy && busySessionId === activeSessionId;
+  const shownDuration = activeSessionBusy ? liveDurationMs : completedDuration ?? 0;
 
   return (
     <div className="app-frame">
@@ -1017,7 +1145,7 @@ export default function App() {
               onSelect={loadSession}
               onNew={openNewTask}
               onChooseWorkspace={handleChooseWorkspace}
-              onOpenSettings={() => { setActivePanel("settings"); setRightVisible(true); }}
+              onOpenSettings={() => setSettingsOpen(true)}
               onProjectAction={handleProjectAction}
               onSessionAction={handleSessionAction}
               statusLabel={sessionStatusLabel}
@@ -1030,20 +1158,17 @@ export default function App() {
           <TopBar
             session={activeSession}
             settings={settings}
-            theme={theme}
             leftVisible={leftVisible}
             rightVisible={rightVisible}
             onToggleLeft={() => setLeftVisible((value) => !value)}
             onToggleRight={() => setRightVisible((value) => !value)}
-            onToggleTheme={() => setTheme((value) => value === "dark" ? "light" : "dark")}
-            onOpenCommand={() => setCommandOpen(true)}
             onExport={handleExport}
             onUndo={handleUndo}
             statusLabel={sessionStatusLabel}
           />
           <div className="workspace-columns">
             <section className="task-column">
-              <ChatPanel sessionId={activeSessionId ?? undefined} messages={messages} busy={busy} taskTitle={activeSession?.title} liveDurationMs={liveDurationMs} taskDurationMs={completedDuration} onCopy={handleCopyText} onSuggestion={(value) => { setDraft(value); document.getElementById("deep-mix-composer")?.focus(); }} />
+              <ChatPanel sessionId={activeSessionId ?? undefined} messages={messages} busy={activeSessionBusy} taskTitle={activeSession?.title} liveDurationMs={liveDurationMs} taskDurationMs={completedDuration} onCopy={handleCopyText} onSuggestion={(value) => { setDraft(value); document.getElementById("deep-mix-composer")?.focus(); }} />
               {pendingUserInput && (
                 <StructuredQuestionPanel
                   request={pendingUserInput}
@@ -1059,6 +1184,8 @@ export default function App() {
                 approvals={approvals}
                 questionPending={pendingUserInput?.mode === "blocking"}
                 busy={busy}
+                goal={goal}
+                onGoalChange={setGoal}
                 onDraftChange={setDraft}
                 onSend={handleSend}
                 onStop={handleStop}
@@ -1068,11 +1195,10 @@ export default function App() {
                 onRemoveAttachment={(id) => setAttachments((current) => current.filter((entry) => entry.id !== id))}
                 onSetPermissionMode={(mode: PermissionMode) => updateSettings({ permissionMode: mode })}
                 onSetReasoningEffort={(reasoningEffort) => updateSettings({ reasoningEffort })}
-                onSetRoute={(route: RouteTarget | null) => updateSettings({ routeOverride: route })}
                 onResolveApproval={handleResolveApproval}
               />
               <div className="task-statusbar">
-                <span><i className={busy ? "is-live" : ""} />{busy ? "任务执行中" : activeSession ? sessionStatusLabel(activeSession.status) : "准备就绪"}</span>
+                <span><i className={activeSessionBusy ? "is-live" : ""} />{activeSessionBusy ? "任务执行中" : activeSession ? sessionStatusLabel(activeSession.status) : "准备就绪"}</span>
                 <span><Icon name="clock" size={12} />{shownDuration ? `${Math.floor(shownDuration / 60_000)}:${String(Math.floor(shownDuration / 1000) % 60).padStart(2, "0")}` : "0:00"}</span>
                 <span><Icon name="context" size={12} />{activeSession?.latestContextBudget ? `${activeSession.latestContextBudget.usagePercent.toFixed(0)}% 上下文` : "等待上下文"}</span>
                 <span className="task-statusbar__spacer" />
@@ -1093,11 +1219,8 @@ export default function App() {
                   processes={processes}
                   stoppingProcessIds={stoppingProcessIds}
                   diagnostics={diagnostics}
-                  settings={settings}
                   busy={busy}
                   onSelectPanel={setActivePanel}
-                  onUpdateSettings={updateSettings}
-                  onRevealPath={(path) => void runtime.revealPath(path)}
                   onStopProcess={(processSessionId) => void handleStopManagedProcess(processSessionId)}
                 />
               </div>
@@ -1105,6 +1228,23 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          busy={busy}
+          theme={theme}
+          archivedGroups={archivedGroups}
+          onThemeChange={setTheme}
+          onClose={() => setSettingsOpen(false)}
+          onUpdateSettings={(patch) => void updateSettings(patch)}
+          onSaveModelProfile={saveModelProfile}
+          onProbeModel={probeModel}
+          onRevealPath={(path) => void runtime.revealPath(path)}
+          onRestoreSession={(session) => void handleSessionAction("archive", session)}
+          onDeleteSession={(session) => setSessionDialog({ type: "delete", session, value: "" })}
+        />
+      )}
 
       {newTaskOpen && (
         <div className="dialog-overlay" onMouseDown={() => setNewTaskOpen(false)}>
@@ -1130,8 +1270,7 @@ export default function App() {
         <div className="dialog-overlay" onMouseDown={() => setProjectDialog(null)}>
           <section className={`product-dialog session-dialog${projectDialog.type === "rename" ? " project-rename-dialog" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
             <div className="product-dialog__header">
-              <div className={`dialog-icon${projectDialog.type === "remove" ? " is-danger" : ""}`}><Icon name={projectDialog.type === "rename" ? "edit" : "trash"} size={18} /></div>
-              <div><small>PROJECT</small><h2>{projectDialog.type === "rename" ? "重命名项目" : "移除项目"}</h2></div>
+              <div><h2>{projectDialog.type === "rename" ? "重命名项目" : "移除项目"}</h2></div>
               <button onClick={() => setProjectDialog(null)} aria-label="关闭"><Icon name="x" size={16} /></button>
             </div>
             <div className="product-dialog__body">
@@ -1157,8 +1296,7 @@ export default function App() {
         <div className="dialog-overlay" onMouseDown={() => setSessionDialog(null)}>
           <section className="product-dialog session-dialog" onMouseDown={(event) => event.stopPropagation()}>
             <div className="product-dialog__header">
-              <div className={`dialog-icon${sessionDialog.type === "delete" ? " is-danger" : ""}`}><Icon name={sessionDialog.type === "rename" ? "edit" : "trash"} size={18} /></div>
-              <div><small>SESSION</small><h2>{sessionDialog.type === "rename" ? "重命名会话" : "删除会话"}</h2></div>
+              <div><h2>{sessionDialog.type === "rename" ? "重命名会话" : "删除会话"}</h2></div>
               <button onClick={() => setSessionDialog(null)} aria-label="关闭"><Icon name="x" size={16} /></button>
             </div>
             <div className="product-dialog__body">
@@ -1169,14 +1307,6 @@ export default function App() {
         </div>
       )}
 
-      {commandOpen && (
-        <div className="command-overlay" onMouseDown={() => setCommandOpen(false)}>
-          <div className="command-palette" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="command-palette__input"><Icon name="search" size={17} /><input autoFocus value={commandQuery} onChange={(event) => setCommandQuery(event.target.value)} placeholder="搜索操作…" /><kbd>Esc</kbd></div>
-            <div className="command-palette__list">{commandItems.map((item) => <button key={item.id} onClick={() => { item.action(); setCommandOpen(false); }}><span><Icon name={item.icon} size={16} /></span><strong>{item.label}</strong><kbd>{item.hint}</kbd></button>)}</div>
-          </div>
-        </div>
-      )}
       {zoomVisible && (
         <div className="zoom-indicator" role="status" aria-live="polite" aria-label={`当前页面缩放 ${Math.round(zoomFactor * 100)}%`}>
           <strong>{Math.round(zoomFactor * 100)}%</strong>

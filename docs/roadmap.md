@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap describes engineering priorities after v1.0.0. It is not a release-date promise and does not expand the guarantees of the current version.
+This roadmap describes engineering priorities after v1.1.0. It is not a release-date promise and does not expand the guarantees of the current version.
 
 ## Guiding principles
 

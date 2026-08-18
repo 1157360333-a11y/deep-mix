@@ -69,7 +69,7 @@ Use `/status` and `/context`. Press Ctrl+C once to request interruption; repeate
 
 ## `start_process` is unavailable
 
-This is the secure v1.0.0 default. Managed background processes are experimental. Prefer a bounded foreground command. If the task genuinely requires a server or watcher, read [Security model](security-model.md#managed-background-processes) and explicitly set:
+This is the secure v1.1.0 default. Managed background processes are experimental. Prefer a bounded foreground command. If the task genuinely requires a server or watcher, read [Security model](security-model.md#managed-background-processes) and explicitly set:
 
 ```json
 {
@@ -112,7 +112,7 @@ npm audit
 npm audit --omit=dev
 ```
 
-Open an issue with the advisory IDs and dependency path, but do not use `npm audit fix --force` without compatibility testing. The v1.0.0 zero-vulnerability statement is a point-in-time release result.
+Open an issue with the advisory IDs and dependency path, but do not use `npm audit fix --force` without compatibility testing. Every release's zero-vulnerability statement is a point-in-time result.
 
 ## Spreadsheet tests fail after a dependency change
 

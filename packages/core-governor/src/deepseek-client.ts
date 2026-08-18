@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
-
 import { resolveDeepSeekRequestConfig } from "../../route-resolver/src/index.js";
+import { DsmlTextStreamFilter, normalizeAssistantToolCalls } from "../../model-adapters/src/tool-call-normalization.js";
 import type {
   AssistantResponse,
   ConversationMessage,
@@ -63,53 +62,11 @@ interface ToolCallAccumulator {
   rawArguments: string;
 }
 
-const DSML_TOOL_CALL_BLOCK = /<｜｜DSML｜｜tool_calls>([\s\S]*?)<\/｜｜DSML｜｜tool_calls>/giu;
-const DSML_INVOKE_BLOCK = /<｜｜DSML｜｜invoke\s+name="([^"]+)">([\s\S]*?)<\/｜｜DSML｜｜invoke>/giu;
-const DSML_PARAMETER_BLOCK = /<｜｜DSML｜｜parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?>([\s\S]*?)<\/｜｜DSML｜｜parameter>/giu;
-
-function decodeDsmlParameter(rawValue: string, forceString: boolean): unknown {
-  const value = rawValue.trim();
-  if (forceString) return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
 export function normalizeDeepSeekAssistantToolCalls(content: string, existingToolCalls: ToolCall[]): {
   content: string;
   toolCalls: ToolCall[];
 } {
-  if (existingToolCalls.length > 0 || !content.includes("<｜｜DSML｜｜tool_calls>")) {
-    return { content, toolCalls: existingToolCalls };
-  }
-
-  const parsedCalls: ToolCall[] = [];
-  const normalizedContent = content.replace(DSML_TOOL_CALL_BLOCK, (_block, body: string) => {
-    for (const invokeMatch of body.matchAll(DSML_INVOKE_BLOCK)) {
-      const name = invokeMatch[1]?.trim();
-      if (!name) continue;
-      const args: Record<string, unknown> = {};
-      for (const parameterMatch of (invokeMatch[2] ?? "").matchAll(DSML_PARAMETER_BLOCK)) {
-        const parameterName = parameterMatch[1]?.trim();
-        if (!parameterName) continue;
-        args[parameterName] = decodeDsmlParameter(parameterMatch[3] ?? "", parameterMatch[2] === "true");
-      }
-      const rawArguments = JSON.stringify(args);
-      parsedCalls.push({
-        id: `dsml-${randomUUID()}`,
-        name,
-        arguments: args,
-        rawArguments,
-      });
-    }
-    return "";
-  }).trim();
-
-  return parsedCalls.length > 0
-    ? { content: normalizedContent, toolCalls: parsedCalls }
-    : { content, toolCalls: existingToolCalls };
+  return normalizeAssistantToolCalls(content, existingToolCalls);
 }
 
 function toAssistantResponse(message: {
@@ -235,6 +192,7 @@ export class DeepSeekClient implements ModelClient {
         let finishReason: string | undefined;
         let rawUsage: unknown;
         const toolCalls = new Map<number, ToolCallAccumulator>();
+        const visibleText = new DsmlTextStreamFilter();
 
         while (true) {
           const { value, done } = await reader.read();
@@ -295,7 +253,8 @@ export class DeepSeekClient implements ModelClient {
               if (delta.content) {
                 content += delta.content;
                 emittedStreamData = true;
-                callbacks?.onTextDelta?.(delta.content);
+                const visibleChunk = visibleText.push(delta.content);
+                if (visibleChunk) callbacks?.onTextDelta?.(visibleChunk);
               }
 
               if (delta.reasoning_content) {
@@ -326,6 +285,8 @@ export class DeepSeekClient implements ModelClient {
           }
         }
 
+        const trailingVisibleText = visibleText.finish();
+        if (trailingVisibleText) callbacks?.onTextDelta?.(trailingVisibleText);
         const usage = normalizeProviderUsage(rawUsage, {
           model: requestConfig.model,
           recordedAt: now(),

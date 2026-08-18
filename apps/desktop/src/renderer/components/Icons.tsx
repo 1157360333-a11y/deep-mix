@@ -27,6 +27,7 @@ export type IconName =
   | "download"
   | "undo"
   | "command"
+  | "keyboard"
   | "file"
   | "image"
   | "code"
@@ -44,7 +45,13 @@ export type IconName =
   | "mail"
   | "id"
   | "zoom-in"
-  | "zoom-out";
+  | "zoom-out"
+  | "target"
+  | "alert"
+  | "shield-check"
+  | "shield-edit"
+  | "shield-question"
+  | "shield-alert";
 
 const paths: Record<IconName, JSX.Element> = {
   "panel-left": <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></>,
@@ -73,6 +80,7 @@ const paths: Record<IconName, JSX.Element> = {
   download: <><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 20h16"/></>,
   undo: <><path d="m9 7-5 5 5 5"/><path d="M5 12h8a6 6 0 0 1 6 6"/></>,
   command: <path d="M9 7V5a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v14a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3Z"/>,
+  keyboard: <><rect x="2.8" y="6" width="18.4" height="12" rx="2.3"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7.5 14h9" strokeWidth="2.2"/></>,
   file: <><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></>,
   image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 2-2 5 4"/></>,
   code: <><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></>,
@@ -91,6 +99,12 @@ const paths: Record<IconName, JSX.Element> = {
   id: <><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="11" r="2"/><path d="M5.5 16c.6-1.5 1.4-2 2.5-2s1.9.5 2.5 2M13 10h5M13 14h5"/></>,
   "zoom-in": <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5M10.5 7.5v6M7.5 10.5h6"/></>,
   "zoom-out": <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5M7.5 10.5h6"/></>,
+  target: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></>,
+  alert: <><path d="M12 3.5 2.8 19.5h18.4L12 3.5Z"/><path d="M12 10v4"/><circle cx="12" cy="16.8" r="0.7" fill="currentColor" stroke="none"/></>,
+  "shield-check": <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="m9.2 11 2 2 3.6-3.8"/></>,
+  "shield-edit": <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="m14.6 8.1-4.1 4.1-.6 1.9 1.9-.6 4.1-4.1-1.3-1.3Z"/></>,
+  "shield-question": <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="M9.9 9.6a2.2 2.2 0 1 1 3 2c-.7.3-.9.8-.9 1.5"/><circle cx="12" cy="14.8" r="0.6" fill="currentColor" stroke="none"/></>,
+  "shield-alert": <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="M12 8.2v3.3"/><circle cx="12" cy="14.4" r="0.7" fill="currentColor" stroke="none"/></>,
 };
 
 export function Icon({ name, size = 18, ...props }: { name: IconName; size?: number } & SVGProps<SVGSVGElement>) {

@@ -8,6 +8,12 @@ import {
 } from "../apps/desktop/src/shared/desktop-message-attachments.js";
 import { isChatViewportNearBottom } from "../apps/desktop/src/renderer/chat-scroll.js";
 import { buildDisplayHistory } from "../apps/desktop/src/renderer/display-history.js";
+import {
+  createLiveMessageFlowState,
+  reconcilePersistedLiveMessages,
+  reduceLiveMessageFlow,
+} from "../apps/desktop/src/renderer/live-message-flow.js";
+import { getSettingsSuccessToast } from "../apps/desktop/src/renderer/settings-notification-policy.js";
 import type { MessageRecord } from "../packages/shared-schema/src/index.js";
 
 function userMessage(content: string, metadata?: Record<string, unknown>): MessageRecord {
@@ -111,9 +117,73 @@ describe("desktop sent-message presentation", () => {
     expect(clearIndex).toBeGreaterThan(-1);
     expect(sendIndex).toBeGreaterThan(clearIndex);
   });
+
+  it("reconciles a completed send with persisted history without requiring a session switch", () => {
+    const source = readFileSync(
+      new URL("../apps/desktop/src/renderer/App.tsx", import.meta.url),
+      "utf8",
+    );
+    const sendStart = source.indexOf("const handleSend = useCallback");
+    const sendEnd = source.indexOf("const handleUserInputResponse", sendStart);
+    const sendBlock = source.slice(sendStart, sendEnd);
+    expect(sendBlock).toContain("const requestedSessionId = activeSessionIdRef.current;");
+    expect(sendBlock).toContain("const response = await runtime.sendPrompt");
+    expect(sendBlock).toContain("const selectedId = response.sessionId");
+    expect(sendBlock).toContain("setMessages(buildDisplayHistory(detail.messages, detail.turns));");
+    expect(sendBlock).toContain("liveMessageFlowRef.current = createLiveMessageFlowState();");
+    expect(sendBlock.indexOf("await runtime.loadSession(selectedId)")).toBeLessThan(
+      sendBlock.indexOf("setMessages(buildDisplayHistory(detail.messages, detail.turns))"),
+    );
+    expect(sendBlock.indexOf("setMessages(buildDisplayHistory(detail.messages, detail.turns))")).toBeLessThan(
+      sendBlock.indexOf('projectLiveMessageEvent(runSessionId, { type: "complete" })'),
+    );
+  });
+
+  it("keeps an active streamed phase while reconciling persisted progress", () => {
+    const state = createLiveMessageFlowState("run-1", "turn-1");
+    const local = [{
+      id: "local-user",
+      turnId: "turn-1",
+      role: "user" as const,
+      content: "检查桌面会话",
+      timestamp: "2026-08-16T00:00:00.000Z",
+    }];
+    const streamed = reduceLiveMessageFlow(local, state, { type: "text", chunk: "正在定位" }, "2026-08-16T00:00:01.000Z");
+    const persisted = [{
+      id: "persisted-user",
+      turnId: "turn-1",
+      role: "user" as const,
+      content: "检查桌面会话",
+      timestamp: "2026-08-16T00:00:00.000Z",
+    }];
+
+    const reconciled = reconcilePersistedLiveMessages(persisted, streamed.messages, streamed.state);
+    expect(reconciled.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(reconciled.at(-1)).toMatchObject({ role: "assistant", content: "正在定位", streaming: true });
+  });
+
+  it("keeps live work and timing scoped to the selected session", () => {
+    const source = readFileSync(
+      new URL("../apps/desktop/src/renderer/App.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("if (sessionId !== activeSessionIdRef.current) return;");
+    expect(source).toContain("const activeSessionBusy = busy && busySessionId === activeSessionId;");
+    expect(source).toContain("reconcilePersistedLiveMessages(");
+    expect(source).not.toContain("selectStreamSession");
+  });
 });
 
 describe("desktop preference feedback", () => {
+  it("keeps routine settings saves quiet while confirming important model changes", () => {
+    expect(getSettingsSuccessToast({ permissionMode: "auto" })).toBeNull();
+    expect(getSettingsSuccessToast({ reasoningEffort: "high" })).toBeNull();
+    expect(getSettingsSuccessToast({ replyStyle: "friendly" })).toBeNull();
+    expect(getSettingsSuccessToast({ enabledSkills: { example: true } })).toBeNull();
+    expect(getSettingsSuccessToast({ models: { expectedRevision: 3, restoreClassic: true } }))
+      .toBe("模型设置已保存并应用");
+  });
+
   it("routes every renderer zoom entry through the percentage indicator", () => {
     const appSource = readFileSync(
       new URL("../apps/desktop/src/renderer/App.tsx", import.meta.url),
@@ -138,7 +208,7 @@ describe("desktop preference feedback", () => {
 
   it("adds reply-style selection and a taller project-name input", () => {
     const settingsSource = readFileSync(
-      new URL("../apps/desktop/src/renderer/components/RightPanel.tsx", import.meta.url),
+      new URL("../apps/desktop/src/renderer/components/SettingsDialog.tsx", import.meta.url),
       "utf8",
     );
     const appSource = readFileSync(
@@ -174,7 +244,9 @@ describe("desktop preference feedback", () => {
 
     expect(mainSource).toContain('title: "新任务"');
     expect(mainSource).toContain('titleSource: "placeholder"');
-    expect(mainSource).toContain("maybeGenerateDesktopSessionTitle(context, result.sessionId");
+    expect(mainSource).toContain("scheduleDesktopSessionTitle(context, result.sessionId");
+    expect(mainSource).toContain("scheduleLegacyDesktopSessionTitleBackfill");
+    expect(mainSource).toContain("titleGenerationVersion: DESKTOP_SESSION_TITLE_VERSION");
     expect(mainSource).toContain('titleSource: "generated"');
   });
 });

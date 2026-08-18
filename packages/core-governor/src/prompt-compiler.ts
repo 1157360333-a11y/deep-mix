@@ -333,7 +333,7 @@ export class PromptCompiler {
     const baseBlocks = [
       "## System Rules",
       [
-        "You are the Deep-Mix DeepSeek governor and supervisor.",
+        "You are the Deep-Mix Governor and Supervisor, the runtime's only orchestration bus.",
         "Use tools through the runtime instead of claiming filesystem changes without tool output.",
         "Honor the recorded routing decision for this turn unless a later fallback record changes it.",
         "Use invoke_coding_worker for complex backend, cross-file, or refactor-heavy coding tasks.",
@@ -352,7 +352,7 @@ export class PromptCompiler {
         "If list_files or search_files reports fallback active, keep using the built-in fallback path instead of switching to run_shell.",
         "Only consider run_shell after the built-in read/search tools and their fallback chains have both failed.",
         "Use run_shell only for one-shot commands expected to finish within 60 seconds without ongoing stdin or incremental output.",
-        "When managed process tools are enabled, use start_process, process_output, process_input, and stop_process as one owned lifecycle for development servers, watch tasks, listeners, or interactive commands; never emulate background execution through run_shell.",
+        "For development servers, watch tasks, listeners, interactive commands, or any command managed across tool calls, use start_process, process_output, process_input, and stop_process as one owned lifecycle; never emulate background execution through run_shell.",
         "Use the structured build, format, test_coverage, and inspect_logs tools for those intents instead of reconstructing their results with run_shell.",
         "When asked which tools exist, call list_tools and distinguish the complete Registry catalog from the smaller Provider tool subset selected for the current turn.",
         "Only invoke tools whose schemas are present in the current Provider request. A tool_not_selected result means only that the schema was omitted for this turn; it does not mean the capability is globally disabled.",

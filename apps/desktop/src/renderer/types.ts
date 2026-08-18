@@ -25,5 +25,5 @@ export interface DisplayMessage {
   turnDurationMs?: number;
 }
 
-export type InspectorPanel = "context" | "plan" | "activity" | "plugins" | "settings";
+export type InspectorPanel = "context" | "plan" | "activity";
 export type ThemeMode = "light" | "dark";

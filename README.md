@@ -2,9 +2,9 @@
 
 [简体中文](README.zh-CN.md) · [Getting started](docs/getting-started.md) · [Security model](docs/security-model.md) · [Contributing](CONTRIBUTING.md)
 
-Deep-Mix is a local-first, multi-model coding-agent runtime. DeepSeek is the single governor and supervisor; optional GLM and Kimi workers provide isolated coding and vision assistance; every workspace side effect still passes through one permissioned tool runtime.
+Deep-Mix is a local-first, multi-model coding-agent runtime. A configurable `governor` slot is the single governor and supervisor; isolated `coding` and `vision` slots provide specialist assistance; every workspace side effect still passes through one permissioned tool runtime. `DeepSeek + GLM + Kimi` remains available as the `classic` compatibility preset, not as a fixed runtime contract.
 
-> **v1.0.0 is a source release for developers.** It includes a CLI and an Electron desktop application, but no signed installer or hosted service. Model API usage is billed by the providers you configure.
+> **v1.1.0 is a source release for developers.** It includes a CLI and an Electron desktop application, but no signed installer or hosted service. Model API usage is billed by the providers you configure.
 
 ![Deep-Mix desktop in light mode](docs/assets/desktop-light.png)
 
@@ -21,10 +21,10 @@ Most multi-model demos route a prompt and concatenate answers. Deep-Mix treats o
 
 ```mermaid
 flowchart LR
-    U["User: CLI or Desktop"] --> G["DeepSeek governor"]
+    U["User: CLI or Desktop"] --> G["Configurable governor slot"]
     G --> B["Specialist broker"]
-    B --> GLM["GLM coding worker"]
-    B --> KIMI["Kimi vision worker"]
+    B --> GLM["Configurable coding slot"]
+    B --> KIMI["Configurable vision slot"]
     GLM --> A["Typed worker artifact"]
     KIMI --> A
     A --> G
@@ -36,9 +36,9 @@ flowchart LR
 ## What is included
 
 - Persistent multi-turn CLI with resume, export, undo, context diagnostics, and approvals
-- Electron desktop client with project selection, session management, attachments, themes, and approval UI
-- DeepSeek governor with streaming, tool calls, context compaction, and history-integrity repair
-- Optional isolated GLM coding and Kimi vision workers
+- Electron desktop client with project selection, session management, attachments, themes, configurable shortcuts, model-profile editing, and approval UI
+- Configurable model profiles and `governor` / `coding` / `vision` slot bindings with capability gates and ordered fallbacks
+- Streaming governor control, isolated workers, context compaction, immutable assignment snapshots, and history-integrity repair
 - Permission modes: `plan`, `edit`, `auto`, and `danger-full-access`
 - Built-in repository, file, patch, shell, Git, web, document, spreadsheet, presentation, notebook, archive, and quality tools
 - Checkpointed writes and rollback records
@@ -47,7 +47,7 @@ flowchart LR
 
 ## Quick start
 
-Requirements: Node.js `22.12+`, npm `10+`, Git, and a DeepSeek-compatible API profile. Windows 10/11 with PowerShell is the primary verified environment; the TypeScript core is portable, but platform-heavy tests are currently Windows-oriented.
+Requirements: Node.js `22.12+`, npm `10+`, Git, and one compatible governor profile. Windows 10/11 with PowerShell is the primary verified environment; the TypeScript core is portable, but platform-heavy tests are currently Windows-oriented.
 
 ```powershell
 git clone https://github.com/1157360333-a11y/deep-mix.git
@@ -121,7 +121,8 @@ Never commit `.deep-mix/api-key-library/profiles.local.json`, provider keys, ses
 | [Testing](docs/testing.md) | Fast, integration, platform, and release checks |
 | [Troubleshooting](docs/troubleshooting.md) | Common setup and runtime failures |
 | [Roadmap](docs/roadmap.md) | Explicit post-1.0 work, not release promises |
-| [v1.0.0 release notes](docs/releases/v1.0.0.md) | Scope, compatibility, and known limitations |
+| [v1.1.0 release notes](docs/releases/v1.1.0.md) | Scope, migration, verification, and known limitations |
+| [v1.0.0 release notes](docs/releases/v1.0.0.md) | Initial public source release |
 
 Machine-readable runtime contracts are published under [`docs/contracts`](docs/contracts/README.md).
 
@@ -138,7 +139,7 @@ npm run desktop:build
 
 ## Project status
 
-`v1.0.0` freezes the public architecture and initial source-release contract. It does not claim OS-level process isolation, signed binaries, hosted synchronization, or compatibility with every OpenAI-compatible provider. Known limitations are tracked in the [release notes](docs/releases/v1.0.0.md) and [roadmap](docs/roadmap.md).
+`v1.1.0` adds configurable model orchestration, user-level workspace state, and a substantially revised Desktop experience while preserving the single-governor and permission-layer boundaries. It does not claim OS-level process isolation, signed binaries, hosted synchronization, or compatibility with every OpenAI-compatible provider. Known limitations are tracked in the [release notes](docs/releases/v1.1.0.md) and [roadmap](docs/roadmap.md).
 
 ## License
 

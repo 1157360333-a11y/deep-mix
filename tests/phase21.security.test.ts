@@ -170,9 +170,9 @@ describe("phase 21 lifecycle security regressions", () => {
           workspaceRoot.split("\\").map((entry, index) => index % 2 === 0 ? entry : entry.toLocaleUpperCase()).join("/"),
         ]
       : [workspaceRoot];
-    const standaloneSk = ["sk", "phase21CatalogSecret123456"].join("-");
-    const bearerSecret = ["Bearer", "phase21CatalogBearer123456"].join(" ");
-    const bareJwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJjYXRhbG9nIn0", "c2lnbmF0dXJlc2VjcmV0"].join(".");
+    const standaloneSk = "sk-phase21CatalogSecret123456";
+    const bearerSecret = "Bearer phase21CatalogBearer123456";
+    const bareJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYXRhbG9nIn0.c2lnbmF0dXJlc2VjcmV0";
     const artifact = await sessionStore.storeToolOutputArtifact({
       sessionId: session.sessionId,
       toolCallId: "phase21-structured-budget",

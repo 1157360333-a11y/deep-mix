@@ -5,11 +5,12 @@ import sharp from "sharp";
 import { SessionStore, type WorkerLifecycleEventScan } from "../../persistence/src/index.js";
 import {
   createCodingWorkerRouteProfile,
+  createModelAssignmentSnapshot,
   createVisionWorkerRouteProfile,
-  loadGlmCodingWorkerConfig,
-  loadKimiVisionWorkerConfig,
-  type GlmCodingWorkerConfig,
-  type KimiVisionWorkerConfig,
+  loadCodingWorkerModelCandidates,
+  loadVisionWorkerModelCandidates,
+  type CodingWorkerModelConfig,
+  type VisionWorkerModelConfig,
 } from "../../route-resolver/src/index.js";
 import type {
   InvokeCodingWorkerResult,
@@ -28,14 +29,16 @@ import type {
   WorkerToolError,
 } from "../../shared-schema/src/index.js";
 import {
-  GlmCodingWorkerClient,
-  GlmWorkerError,
+  CodingWorkerClient,
+  CodingWorkerError,
+  FallbackCodingWorkerRunner,
   type CodingWorkerRunner,
 } from "../../worker-glm-coding/src/index.js";
 import {
   buildVisionArtifact,
-  KimiVisionWorkerClient,
-  KimiVisionWorkerError,
+  FallbackVisionWorkerRunner,
+  VisionWorkerClient,
+  VisionWorkerError,
   toVisionToolSummary,
   type PreparedVisionInput,
   type VisionWorkerRunner,
@@ -45,8 +48,8 @@ import {
 interface SpecialistBrokerOptions {
   workspaceRoot: string;
   sessionStore: SessionStore;
-  codingWorkerFactory?: (config: GlmCodingWorkerConfig) => CodingWorkerRunner;
-  visionWorkerFactory?: (config: KimiVisionWorkerConfig) => VisionWorkerRunner;
+  codingWorkerFactory?: (config: CodingWorkerModelConfig) => CodingWorkerRunner;
+  visionWorkerFactory?: (config: VisionWorkerModelConfig) => VisionWorkerRunner;
 }
 
 export interface WorkerPublicOutputSnapshot {
@@ -165,7 +168,7 @@ function toWorkerError(
   workerSessionId: string,
   signal?: AbortSignal,
 ): WorkerToolError {
-  if (error instanceof GlmWorkerError) {
+  if (error instanceof CodingWorkerError) {
     return {
       errorType: error.type,
       message: error.message,
@@ -197,7 +200,7 @@ function toVisionWorkerError(
   workerSessionId: string,
   signal?: AbortSignal,
 ): WorkerToolError {
-  if (error instanceof KimiVisionWorkerError) {
+  if (error instanceof VisionWorkerError) {
     return {
       errorType: error.type,
       message: error.message,
@@ -241,7 +244,7 @@ function inferMimeType(extension: string): string {
     case "gif":
       return "image/gif";
     default:
-      throw new KimiVisionWorkerError("input_validation_failed", `Unsupported image format: ${extension}`);
+      throw new VisionWorkerError("input_validation_failed", `Unsupported image format: ${extension}`);
   }
 }
 
@@ -250,9 +253,9 @@ export class SpecialistBroker {
 
   private readonly sessionStore: SessionStore;
 
-  private readonly codingWorkerFactory: (config: GlmCodingWorkerConfig) => CodingWorkerRunner;
+  private readonly codingWorkerFactory: (config: CodingWorkerModelConfig) => CodingWorkerRunner;
 
-  private readonly visionWorkerFactory: (config: KimiVisionWorkerConfig) => VisionWorkerRunner;
+  private readonly visionWorkerFactory: (config: VisionWorkerModelConfig) => VisionWorkerRunner;
 
   private readonly activeControllers = new Map<string, AbortController>();
 
@@ -265,8 +268,8 @@ export class SpecialistBroker {
   public constructor(options: SpecialistBrokerOptions) {
     this.workspaceRoot = options.workspaceRoot;
     this.sessionStore = options.sessionStore;
-    this.codingWorkerFactory = options.codingWorkerFactory ?? ((config) => new GlmCodingWorkerClient(config));
-    this.visionWorkerFactory = options.visionWorkerFactory ?? ((config) => new KimiVisionWorkerClient(config));
+    this.codingWorkerFactory = options.codingWorkerFactory ?? ((config) => new CodingWorkerClient(config));
+    this.visionWorkerFactory = options.visionWorkerFactory ?? ((config) => new VisionWorkerClient(config));
   }
 
   public async createCodingSession(input: {
@@ -275,36 +278,54 @@ export class SpecialistBroker {
     dispatchKind?: WorkerDispatchKind;
     retryOfWorkerSessionId?: string;
     reviseOfWorkerSessionId?: string;
-  }): Promise<{ session: WorkerSessionRecord; config: GlmCodingWorkerConfig }> {
-    const config = await loadGlmCodingWorkerConfig(this.workspaceRoot);
+  }): Promise<{ session: WorkerSessionRecord; config: CodingWorkerModelConfig; candidateConfigs: CodingWorkerModelConfig[]; fallbackPolicy: import("../../shared-schema/src/index.js").ModelFallbackPolicy }> {
+    const candidates = await loadCodingWorkerModelCandidates(this.workspaceRoot);
+    const config = candidates.configs[0]!;
     const route = createCodingWorkerRouteProfile(config);
+    const modelAssignment = createModelAssignmentSnapshot({
+      slot: "coding",
+      config,
+      configRevision: candidates.settingsRevision,
+      selectionReason: candidates.preset === "classic" ? "classic_preset" : "primary",
+      source: candidates.source,
+    });
     const session = await this.sessionStore.createWorkerSession({
       parentSessionId: input.parentSessionId,
       task: input.task,
       route,
+      modelAssignment,
       timeoutMs: config.timeoutMs,
       maxRetries: config.maxRetries,
       dispatchKind: input.dispatchKind,
       retryOfWorkerSessionId: input.retryOfWorkerSessionId,
       reviseOfWorkerSessionId: input.reviseOfWorkerSessionId,
     });
-    return { session, config };
+    return { session, config, candidateConfigs: candidates.configs, fallbackPolicy: candidates.fallbackPolicy };
   }
 
   public async createVisionSession(input: {
     parentSessionId: string;
     task: WorkerTask;
-  }): Promise<{ session: WorkerSessionRecord; config: KimiVisionWorkerConfig }> {
-    const config = await loadKimiVisionWorkerConfig(this.workspaceRoot);
+  }): Promise<{ session: WorkerSessionRecord; config: VisionWorkerModelConfig; candidateConfigs: VisionWorkerModelConfig[]; fallbackPolicy: import("../../shared-schema/src/index.js").ModelFallbackPolicy }> {
+    const candidates = await loadVisionWorkerModelCandidates(this.workspaceRoot);
+    const config = candidates.configs[0]!;
     const route = createVisionWorkerRouteProfile(config);
+    const modelAssignment = createModelAssignmentSnapshot({
+      slot: "vision",
+      config,
+      configRevision: candidates.settingsRevision,
+      selectionReason: candidates.preset === "classic" ? "classic_preset" : "primary",
+      source: candidates.source,
+    });
     const session = await this.sessionStore.createWorkerSession({
       parentSessionId: input.parentSessionId,
       task: input.task,
       route,
+      modelAssignment,
       timeoutMs: config.timeoutMs,
       maxRetries: config.maxRetries,
     });
-    return { session, config };
+    return { session, config, candidateConfigs: candidates.configs, fallbackPolicy: candidates.fallbackPolicy };
   }
 
   public async invokeCodingWorker(input: {
@@ -314,10 +335,12 @@ export class SpecialistBroker {
     retryOfWorkerSessionId?: string;
     reviseOfWorkerSessionId?: string;
   }): Promise<InvokeCodingWorkerResult> {
-    const { session, config } = await this.createCodingSession(input);
+    const { session, config, candidateConfigs, fallbackPolicy } = await this.createCodingSession(input);
     return this.runCodingWorkerSession({
       session,
       config,
+      candidateConfigs,
+      fallbackPolicy,
       task: input.task,
       initialDispatchKind: session.dispatchKind,
       firstAttemptReason: "Dispatching coding worker task.",
@@ -329,13 +352,15 @@ export class SpecialistBroker {
     task: WorkerTask;
     visionInput: VisionWorkerToolInput;
   }): Promise<InvokeVisionWorkerResult> {
-    const { session, config } = await this.createVisionSession({
+    const { session, config, candidateConfigs, fallbackPolicy } = await this.createVisionSession({
       parentSessionId: input.parentSessionId,
       task: input.task,
     });
     return this.runVisionWorkerSession({
       session,
       config,
+      candidateConfigs,
+      fallbackPolicy,
       task: input.task,
       visionInput: input.visionInput,
     });
@@ -349,7 +374,8 @@ export class SpecialistBroker {
     if (!session) {
       throw new Error(`Unknown worker session: ${input.workerSessionId}`);
     }
-    const config = await loadGlmCodingWorkerConfig(this.workspaceRoot);
+    const candidates = await loadCodingWorkerModelCandidates(this.workspaceRoot);
+    const config = candidates.configs[0]!;
     const latestArtifact = await this.sessionStore.loadLatestWorkerArtifact(input.workerSessionId);
     const task = toWorkerTask(session);
     task.contextRefs = [
@@ -373,6 +399,8 @@ export class SpecialistBroker {
     return this.runCodingWorkerSession({
       session,
       config,
+      candidateConfigs: candidates.configs,
+      fallbackPolicy: candidates.fallbackPolicy,
       task,
       initialDispatchKind: "revise",
       firstAttemptReason: "Supervisor requested a worker revision.",
@@ -387,7 +415,8 @@ export class SpecialistBroker {
     if (!current) {
       throw new Error(`Unknown worker session: ${input.workerSessionId}`);
     }
-    const config = await loadGlmCodingWorkerConfig(this.workspaceRoot);
+    const candidates = await loadCodingWorkerModelCandidates(this.workspaceRoot);
+    const config = candidates.configs[0]!;
     const task = toWorkerTask(current);
     task.contextRefs = [...task.contextRefs, ...input.extraContextRefs];
     const session = await this.sessionStore.updateWorkerSession(input.workerSessionId, (existing) => ({
@@ -398,6 +427,8 @@ export class SpecialistBroker {
     return this.runCodingWorkerSession({
       session,
       config,
+      candidateConfigs: candidates.configs,
+      fallbackPolicy: candidates.fallbackPolicy,
       task,
       initialDispatchKind: "retry",
       firstAttemptReason: "Supervisor retried the worker with more context.",
@@ -406,16 +437,27 @@ export class SpecialistBroker {
 
   private async runCodingWorkerSession(input: {
     session: WorkerSessionRecord;
-    config: GlmCodingWorkerConfig;
+    config: CodingWorkerModelConfig;
+    candidateConfigs?: CodingWorkerModelConfig[];
+    fallbackPolicy?: import("../../shared-schema/src/index.js").ModelFallbackPolicy;
     task: WorkerTask;
     initialDispatchKind: WorkerDispatchKind;
     firstAttemptReason: string;
   }): Promise<InvokeCodingWorkerResult> {
-    const worker = this.codingWorkerFactory(input.config);
+    const candidateConfigs = input.candidateConfigs ?? [input.config];
+    const fallbackWorker = candidateConfigs.length > 1
+      ? new FallbackCodingWorkerRunner(
+          candidateConfigs.map((config) => ({ config, runner: this.codingWorkerFactory(config) })),
+          new Set(input.fallbackPolicy?.on ?? []),
+        )
+      : undefined;
+    const worker = fallbackWorker ?? this.codingWorkerFactory(input.config);
     const resolvedContext = await this.resolveWorkerContext(input.task, input.config);
     let lastError: WorkerToolError | undefined;
 
     for (let attempt = 0; attempt <= input.config.maxRetries; attempt += 1) {
+      const invocationStartedAt = Date.now();
+      let modelInvoked = false;
       const dispatchKind = attempt === 0 ? input.initialDispatchKind : "retry";
       const controller = new AbortController();
       this.activeControllers.set(input.session.workerSessionId, controller);
@@ -441,7 +483,7 @@ export class SpecialistBroker {
         await this.sessionStore.appendWorkerMessage({
           workerSessionId: input.session.workerSessionId,
           role: "system",
-          content: "GLM coding worker invoked by Specialist Broker. Workspace writes are disabled.",
+          content: "Coding worker invoked by Specialist Broker. Workspace writes are disabled.",
           metadata: {
             routeRole: "coding_worker",
             dispatchKind,
@@ -468,6 +510,7 @@ export class SpecialistBroker {
           throw new Error("cancelled");
         }
 
+        modelInvoked = true;
         const result = await worker.runTask({
           task: input.task,
           resolvedContext,
@@ -477,6 +520,18 @@ export class SpecialistBroker {
 
         if (controller.signal.aborted) throw new Error("cancelled");
 
+        if (fallbackWorker) {
+          await this.sessionStore.appendWorkerMessage({
+            workerSessionId: input.session.workerSessionId,
+            role: "system",
+            content: "Coding model candidate selection completed before artifact publication.",
+            metadata: {
+              attempts: fallbackWorker.attempts,
+              selectedFallbackIndex: fallbackWorker.selectedIndex,
+            },
+          });
+        }
+
         await this.sessionStore.appendWorkerMessage({
           workerSessionId: input.session.workerSessionId,
           role: "assistant",
@@ -485,6 +540,18 @@ export class SpecialistBroker {
 
         if (controller.signal.aborted) throw new Error("cancelled");
 
+        const selectedConfig = fallbackWorker ? candidateConfigs[fallbackWorker.selectedIndex]! : input.config;
+        await this.sessionStore.recordModelInvocation(input.session.parentSessionId, createModelAssignmentSnapshot({
+          slot: "coding",
+          config: selectedConfig,
+          configRevision: input.session.modelAssignment?.configRevision ?? 0,
+          fallbackIndex: fallbackWorker?.selectedIndex ?? 0,
+          selectionReason: (fallbackWorker?.selectedIndex ?? 0) > 0 ? "ordered_fallback" : input.session.modelAssignment?.selectionReason ?? "primary",
+          source: input.session.modelAssignment?.source ?? "settings",
+        }), {
+          result: "success",
+          latencyMs: Date.now() - invocationStartedAt,
+        }).catch(() => undefined);
         const artifactRecord = await this.sessionStore.storeCodeArtifact({
           workerSessionId: input.session.workerSessionId,
           artifact: {
@@ -497,8 +564,8 @@ export class SpecialistBroker {
             notes: result.artifact.notes,
             metadata: {
               workerSessionId: input.session.workerSessionId,
-              provider: "glm",
-              model: input.config.model,
+              provider: selectedConfig.provider ?? "coding-adapter",
+              model: selectedConfig.model,
               createdAt: now(),
               ...(result.artifact.metadata ?? {}),
             },
@@ -525,7 +592,13 @@ export class SpecialistBroker {
           artifact: artifactRecord.summary,
         };
       } catch (error) {
-        if (error instanceof GlmWorkerError && error.rawResponse && !controller.signal.aborted) {
+        if (modelInvoked && input.session.modelAssignment) {
+          await this.sessionStore.recordModelInvocation(input.session.parentSessionId, input.session.modelAssignment, {
+            result: "failure",
+            latencyMs: Date.now() - invocationStartedAt,
+          }).catch(() => undefined);
+        }
+        if (error instanceof CodingWorkerError && error.rawResponse && !controller.signal.aborted) {
           await this.sessionStore.appendWorkerMessage({
             workerSessionId: input.session.workerSessionId,
             role: "assistant",
@@ -578,11 +651,20 @@ export class SpecialistBroker {
 
   private async runVisionWorkerSession(input: {
     session: WorkerSessionRecord;
-    config: KimiVisionWorkerConfig;
+    config: VisionWorkerModelConfig;
+    candidateConfigs?: VisionWorkerModelConfig[];
+    fallbackPolicy?: import("../../shared-schema/src/index.js").ModelFallbackPolicy;
     task: WorkerTask;
     visionInput: VisionWorkerToolInput;
   }): Promise<InvokeVisionWorkerResult> {
-    const worker = this.visionWorkerFactory(input.config);
+    const candidateConfigs = input.candidateConfigs ?? [input.config];
+    const fallbackWorker = candidateConfigs.length > 1
+      ? new FallbackVisionWorkerRunner(
+          candidateConfigs.map((config) => ({ config, runner: this.visionWorkerFactory(config) })),
+          new Set(input.fallbackPolicy?.on ?? []),
+        )
+      : undefined;
+    const worker = fallbackWorker ?? this.visionWorkerFactory(input.config);
     const controller = new AbortController();
     this.activeControllers.set(input.session.workerSessionId, controller);
     if (this.pendingCancellations.has(input.session.workerSessionId)) {
@@ -590,6 +672,8 @@ export class SpecialistBroker {
       this.pendingCancellations.delete(input.session.workerSessionId);
     }
     const timeout = setTimeout(() => controller.abort("timeout"), input.config.timeoutMs);
+    const invocationStartedAt = Date.now();
+    let modelInvoked = false;
 
     try {
       if (controller.signal.aborted) throw new Error("cancelled");
@@ -609,7 +693,7 @@ export class SpecialistBroker {
       await this.sessionStore.appendWorkerMessage({
         workerSessionId: input.session.workerSessionId,
         role: "system",
-        content: "Kimi vision worker invoked by Specialist Broker. Workspace writes are disabled.",
+        content: "Vision worker invoked by Specialist Broker. Workspace writes are disabled.",
         metadata: {
           routeRole: "vision_worker",
           timeoutMs: input.config.timeoutMs,
@@ -649,6 +733,7 @@ export class SpecialistBroker {
         throw new Error("cancelled");
       }
 
+      modelInvoked = true;
       const result = await worker.runTask({
         task: input.task,
         preparedInput,
@@ -657,6 +742,31 @@ export class SpecialistBroker {
       });
 
       if (controller.signal.aborted) throw new Error("cancelled");
+
+      if (fallbackWorker) {
+        await this.sessionStore.appendWorkerMessage({
+          workerSessionId: input.session.workerSessionId,
+          role: "system",
+          content: "Vision model candidate selection completed before artifact publication.",
+          metadata: {
+            attempts: fallbackWorker.attempts,
+            selectedFallbackIndex: fallbackWorker.selectedIndex,
+          },
+        });
+      }
+
+      const selectedConfig = fallbackWorker ? candidateConfigs[fallbackWorker.selectedIndex]! : input.config;
+      await this.sessionStore.recordModelInvocation(input.session.parentSessionId, createModelAssignmentSnapshot({
+        slot: "vision",
+        config: selectedConfig,
+        configRevision: input.session.modelAssignment?.configRevision ?? 0,
+        fallbackIndex: fallbackWorker?.selectedIndex ?? 0,
+        selectionReason: (fallbackWorker?.selectedIndex ?? 0) > 0 ? "ordered_fallback" : input.session.modelAssignment?.selectionReason ?? "primary",
+        source: input.session.modelAssignment?.source ?? "settings",
+      }), {
+        result: "success",
+        latencyMs: Date.now() - invocationStartedAt,
+      }).catch(() => undefined);
 
       await this.sessionStore.appendWorkerMessage({
         workerSessionId: input.session.workerSessionId,
@@ -688,7 +798,13 @@ export class SpecialistBroker {
         artifact: toVisionToolSummary(artifact, artifactRecord.artifactRef),
       };
     } catch (error) {
-      if (error instanceof KimiVisionWorkerError && error.rawResponse && !controller.signal.aborted) {
+      if (modelInvoked && input.session.modelAssignment) {
+        await this.sessionStore.recordModelInvocation(input.session.parentSessionId, input.session.modelAssignment, {
+          result: "failure",
+          latencyMs: Date.now() - invocationStartedAt,
+        }).catch(() => undefined);
+      }
+      if (error instanceof VisionWorkerError && error.rawResponse && !controller.signal.aborted) {
         await this.sessionStore.appendWorkerMessage({
           workerSessionId: input.session.workerSessionId,
           role: "assistant",
@@ -724,7 +840,7 @@ export class SpecialistBroker {
   private async prepareVisionInput(
     workerSessionId: string,
     image: VisionImageRef,
-    config: KimiVisionWorkerConfig,
+    config: VisionWorkerModelConfig,
     taskType: VisionWorkerToolInput["taskType"],
   ): Promise<PreparedVisionInput> {
     const absoluteSourcePath = this.resolveVisionInputPath(image);
@@ -732,17 +848,17 @@ export class SpecialistBroker {
     try {
       sourceBuffer = await fs.readFile(absoluteSourcePath);
     } catch (error) {
-      throw new KimiVisionWorkerError(
+      throw new VisionWorkerError(
         "input_validation_failed",
         `Failed to read image ${image.ref}: ${(error as Error).message}`,
       );
     }
 
     if (sourceBuffer.byteLength === 0) {
-      throw new KimiVisionWorkerError("input_validation_failed", `Image is empty: ${image.ref}`);
+      throw new VisionWorkerError("input_validation_failed", `Image is empty: ${image.ref}`);
     }
     if (sourceBuffer.byteLength > config.maxImageBytes) {
-      throw new KimiVisionWorkerError(
+      throw new VisionWorkerError(
         "input_validation_failed",
         `Image exceeds the configured size limit (${sourceBuffer.byteLength} > ${config.maxImageBytes}).`,
       );
@@ -752,7 +868,7 @@ export class SpecialistBroker {
     const originalImage = sharp(sourceBuffer, { animated: false });
     const metadata = await originalImage.metadata();
     if (!metadata.width || !metadata.height || !metadata.format) {
-      throw new KimiVisionWorkerError("input_validation_failed", `Unable to determine image dimensions for ${image.ref}.`);
+      throw new VisionWorkerError("input_validation_failed", `Unable to determine image dimensions for ${image.ref}.`);
     }
 
     const format = normalizeFileExtension(metadata.format);
@@ -796,7 +912,7 @@ export class SpecialistBroker {
       recompressed = true;
     }
     if (processedBuffer.byteLength > config.targetImageBytes) {
-      throw new KimiVisionWorkerError(
+      throw new VisionWorkerError(
         "input_validation_failed",
         `Processed image still exceeds the configured size limit (${processedBuffer.byteLength} > ${config.targetImageBytes}).`,
       );
@@ -804,10 +920,10 @@ export class SpecialistBroker {
 
     const processedMetadata = await sharp(processedBuffer).metadata();
     if (!processedMetadata.width || !processedMetadata.height) {
-      throw new KimiVisionWorkerError("input_validation_failed", "Unable to determine processed image dimensions.");
+      throw new VisionWorkerError("input_validation_failed", "Unable to determine processed image dimensions.");
     }
     if (processedMetadata.width > config.maxImageDimension || processedMetadata.height > config.maxImageDimension) {
-      throw new KimiVisionWorkerError(
+      throw new VisionWorkerError(
         "input_validation_failed",
         `Processed image exceeds the configured dimension limit (${processedMetadata.width}x${processedMetadata.height}).`,
       );
@@ -849,7 +965,7 @@ export class SpecialistBroker {
     if (image.ref.startsWith("artifact://")) {
       return this.sessionStore.resolveArtifactPath(image.ref);
     }
-    throw new KimiVisionWorkerError("input_validation_failed", `Unsupported image ref: ${image.ref}`);
+    throw new VisionWorkerError("input_validation_failed", `Unsupported image ref: ${image.ref}`);
   }
 
   private async requireOwnedWorkerSession(
@@ -1272,7 +1388,7 @@ export class SpecialistBroker {
     return this.sessionStore.loadWorkerEvents(workerSessionId);
   }
 
-  private async resolveWorkerContext(task: WorkerTask, config: GlmCodingWorkerConfig): Promise<string> {
+  private async resolveWorkerContext(task: WorkerTask, config: CodingWorkerModelConfig): Promise<string> {
     const blocks: string[] = [];
     let remainingChars = config.maxContextChars;
     const selectedRefs = task.contextRefs.slice(0, config.maxContextFiles);

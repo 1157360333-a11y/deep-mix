@@ -23,15 +23,8 @@ interface SessionSidebarProps {
   statusLabel: (status: SessionRecord["status"]) => string;
 }
 
-function formatRelativeTime(value: string): string {
-  const diff = Date.now() - new Date(value).getTime();
-  const minutes = Math.max(0, Math.floor(diff / 60_000));
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时`;
-  const days = Math.floor(hours / 24);
-  return days < 7 ? `${days} 天` : new Date(value).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+function formatFullTime(value: string): string {
+  return new Date(value).toLocaleString("zh-CN", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function workspaceName(root: string): string {
@@ -54,8 +47,8 @@ export function SessionSidebar({
   statusLabel,
 }: SessionSidebarProps) {
   const [query, setQuery] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(() => new Set());
+  const [expandedRoots, setExpandedRoots] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<
     | { kind: "session"; session: SessionRecord; top: number; left: number }
     | { kind: "project"; root: string; name: string; pinned: boolean; top: number; left: number }
@@ -77,7 +70,6 @@ export function SessionSidebar({
     };
   }, [menu]);
 
-  const archivedCount = sessions.filter((session) => !!session.archivedAt).length;
   const projects = useMemo(() => {
     const roots = [...new Set([...workspaceRoots, ...sessions.map((session) => session.workspaceRoot)])];
     const normalizedQuery = query.trim().toLowerCase();
@@ -85,7 +77,7 @@ export function SessionSidebar({
       const preference = projectPreferences[root];
       const projectSessions = sessions
         .filter((session) => session.workspaceRoot === root)
-        .filter((session) => showArchived ? !!session.archivedAt : !session.archivedAt)
+        .filter((session) => !session.archivedAt)
         .filter((session) => !normalizedQuery || session.title.toLowerCase().includes(normalizedQuery))
         .sort((left, right) => {
           if (!!left.pinnedAt !== !!right.pinnedAt) return left.pinnedAt ? -1 : 1;
@@ -98,7 +90,7 @@ export function SessionSidebar({
         if (!!left.pinnedAt !== !!right.pinnedAt) return left.pinnedAt ? -1 : 1;
         return left.order - right.order;
       });
-  }, [projectPreferences, query, sessions, showArchived, workspaceRoots]);
+  }, [projectPreferences, query, sessions, workspaceRoots]);
 
   const menuPosition = (button: HTMLButtonElement, menuHeight: number) => {
     const rect = button.getBoundingClientRect();
@@ -137,6 +129,13 @@ export function SessionSidebar({
   };
 
   const toggleProject = (root: string) => setCollapsedRoots((current) => {
+    const next = new Set(current);
+    if (next.has(root)) next.delete(root);
+    else next.add(root);
+    return next;
+  });
+
+  const toggleExpandedSessions = (root: string) => setExpandedRoots((current) => {
     const next = new Set(current);
     if (next.has(root)) next.delete(root);
     else next.add(root);
@@ -184,6 +183,10 @@ export function SessionSidebar({
         {projects.length === 0 ? <div className="empty-list">没有匹配的项目或任务</div> : projects.map((project) => {
           const collapsed = collapsedRoots.has(project.root);
           const activeProject = project.root === (sessions.find((session) => session.sessionId === activeSessionId)?.workspaceRoot ?? composerWorkspaceRoot);
+          const expanded = expandedRoots.has(project.root);
+          const searching = query.trim().length > 0;
+          const visibleSessions = searching || expanded ? project.sessions : project.sessions.slice(0, 6);
+          const hiddenCount = project.sessions.length - visibleSessions.length;
           return (
             <section className={`project-node${activeProject ? " project-node--active" : ""}${project.pinnedAt ? " project-node--pinned" : ""}`} key={project.root}>
               <div className="project-node__header" role="button" tabIndex={0} title={project.root} onClick={() => toggleProject(project.root)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") toggleProject(project.root); }}>
@@ -199,40 +202,47 @@ export function SessionSidebar({
               </div>
               {!collapsed && (
                 <div className="project-node__sessions">
-                  {project.sessions.length === 0 ? <button className="project-empty-task" onClick={() => onNew(project.root)}>在此项目中创建任务</button> : project.sessions.map((session) => (
-                    <div
-                      key={session.sessionId}
-                      role="button"
-                      tabIndex={0}
-                      className={`session-row${session.sessionId === activeSessionId ? " session-row--active" : ""}${session.unread ? " session-row--unread" : ""}`}
-                      onClick={() => onSelect(session.sessionId)}
-                      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(session.sessionId); }}
-                    >
-                      <span className={`session-row__status session-row__status--${session.status}`} />
-                      <span className="session-row__copy">
-                        <strong>{session.title || "未命名任务"}{session.unread && <i className="session-row__unread" />}</strong>
-                        <small>{statusLabel(session.status)} · {formatRelativeTime(session.updatedAt)}</small>
-                      </span>
-                      {session.pinnedAt && <span className="session-row__pin"><Icon name="pin" size={11} /></span>}
-                      <button className="session-row__more" onClick={(event) => openSessionMenu(event, session)} aria-label={`管理会话 ${session.title}`} title="会话操作"><Icon name="more" size={16} /></button>
-                    </div>
-                  ))}
+                  {project.sessions.length === 0 ? <button className="project-empty-task" onClick={() => onNew(project.root)}>在此项目中创建任务</button> : (
+                    <>
+                      {visibleSessions.map((session) => (
+                        <div
+                          key={session.sessionId}
+                          role="button"
+                          tabIndex={0}
+                          className={`session-row${session.sessionId === activeSessionId ? " session-row--active" : ""}${session.unread ? " session-row--unread" : ""}`}
+                          title={`${statusLabel(session.status)} · ${formatFullTime(session.updatedAt)}`}
+                          onClick={() => onSelect(session.sessionId)}
+                          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(session.sessionId); }}
+                        >
+                          <span className={`session-row__status${session.status === "running" ? " session-row__status--running" : session.unread ? " session-row__status--unread" : ""}`} />
+                          <span className="session-row__copy"><strong>{session.title || "未命名任务"}</strong></span>
+                          {session.pinnedAt && <span className="session-row__pin"><Icon name="pin" size={11} /></span>}
+                          <button className="session-row__more" onClick={(event) => openSessionMenu(event, session)} aria-label={`管理会话 ${session.title}`} title="会话操作"><Icon name="more" size={16} /></button>
+                        </div>
+                      ))}
+                      {hiddenCount > 0 && (
+                        <button className="session-expand-toggle" onClick={() => toggleExpandedSessions(project.root)}>
+                          <Icon name="chevron-down" size={12} /><span>展开会话（还有 {hiddenCount} 个）</span>
+                        </button>
+                      )}
+                      {expanded && !searching && project.sessions.length > 6 && (
+                        <button className="session-expand-toggle is-open" onClick={() => toggleExpandedSessions(project.root)}>
+                          <Icon name="chevron-down" size={12} /><span>收起会话</span>
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </section>
           );
         })}
-        {archivedCount > 0 && (
-          <button className={`archive-toggle${showArchived ? " is-active" : ""}`} onClick={() => setShowArchived((value) => !value)}>
-            <Icon name="archive" size={14} /><span>{showArchived ? "返回任务" : `已归档 ${archivedCount}`}</span><Icon name="chevron-down" size={12} />
-          </button>
-        )}
       </div>
 
       <div className="sidebar__footer">
         <button className="sidebar-footer-button" onClick={onOpenSettings}>
           <span className="profile-avatar">DM</span>
-          <span className="sidebar-footer-button__copy"><strong>本地工作台</strong><small>{settings?.profiles.deepseek_governor.hasKey ? "Governor 已连接" : "需要配置 Governor"}</small></span>
+          <span className="sidebar-footer-button__copy"><strong>本地工作台</strong><small>{(settings?.models.slots.governor.primary.status.hasKey ?? settings?.profiles.deepseek_governor.hasKey) ? "Governor 已连接" : "需要配置 Governor"}</small></span>
           <Icon name="settings" size={17} />
         </button>
       </div>

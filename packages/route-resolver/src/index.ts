@@ -1,14 +1,14 @@
-import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
-  DeepSeekProviderConfig,
+  GovernorModelConfig,
+  ModelAssignmentSnapshot,
   ReasoningEffort,
   ReplyStyle,
   RouteProfile,
   ThinkingModeType,
 } from "../../shared-schema/src/index.js";
-import { loadDeepMixSettingsSync } from "../../settings/src/index.js";
+import { ProfileService } from "../../model-adapters/src/index.js";
+import { loadDeepMixSettingsSync, resolveEffectiveModelSettings } from "../../settings/src/index.js";
 export {
   DEFAULT_ROUTING_POLICY,
   createFallbackRoutingDecision,
@@ -23,35 +23,18 @@ export {
   type RoutingRule,
 } from "./routing-policy.js";
 
-interface ApiKeyLibraryProfile {
-  provider: string;
-  role: string;
-  apiKey?: string;
-  apiKeyEnvName?: string;
-  baseUrl: string;
-  chatPath: string;
-  model: string;
-  supportsMultimodalInput?: boolean;
-  headers?: Record<string, string>;
-  requestDefaults?: Record<string, unknown>;
-}
-
-interface ApiKeyLibrary {
-  version: number;
-  profiles: Record<string, ApiKeyLibraryProfile>;
-}
-
 export interface ApiKeyLibraryProfileStatus {
   exists: boolean;
   hasKey: boolean;
 }
 
-export interface DeepSeekProviderConfigLoadOptions {
-  allowMissingProfileForInjectedClient?: boolean;
-}
-
-export interface GlmCodingWorkerConfig {
+export interface CodingWorkerModelConfig {
   apiKey?: string;
+  profileId?: string;
+  provider?: string;
+  adapterId?: string;
+  protocol?: string;
+  capabilities?: import("../../shared-schema/src/index.js").ModelCapabilityManifest;
   baseUrl: string;
   endpointPath: string;
   model: string;
@@ -67,8 +50,13 @@ export interface GlmCodingWorkerConfig {
   workspaceWriteAccess: false;
 }
 
-export interface KimiVisionWorkerConfig {
+export interface VisionWorkerModelConfig {
   apiKey?: string;
+  profileId?: string;
+  provider?: string;
+  adapterId?: string;
+  protocol?: string;
+  capabilities?: import("../../shared-schema/src/index.js").ModelCapabilityManifest;
   baseUrl: string;
   endpointPath: string;
   model: string;
@@ -86,6 +74,43 @@ export interface KimiVisionWorkerConfig {
   headers: Record<string, string>;
   requestDefaults: Record<string, unknown>;
   supportsMultimodalInput: boolean;
+}
+
+export function createModelAssignmentSnapshot(input: {
+  slot: "governor" | "coding" | "vision";
+  config: GovernorModelConfig | CodingWorkerModelConfig | VisionWorkerModelConfig;
+  configRevision: number;
+  fallbackIndex?: number;
+  selectionReason: ModelAssignmentSnapshot["selectionReason"];
+  source: ModelAssignmentSnapshot["source"];
+}): ModelAssignmentSnapshot {
+  const capabilities = input.config.capabilities ?? {
+    textInput: true,
+    imageInput: input.slot === "vision",
+    streaming: input.slot === "governor" && "stream" in input.config ? input.config.stream : false,
+    nativeToolCalling: input.slot === "governor",
+    structuredOutput: input.slot !== "governor",
+    reasoning: input.slot === "governor",
+    contextWindow: input.config.contextWindow,
+  };
+  const snapshot: ModelAssignmentSnapshot = {
+    schemaVersion: 1,
+    assignmentId: randomUUID(),
+    configRevision: input.configRevision,
+    slot: input.slot,
+    routeTarget: input.slot === "governor" ? "governor_direct" : input.slot === "coding" ? "coding_worker" : "vision_worker",
+    profileId: input.config.profileId ?? `legacy_${input.slot}`,
+    provider: input.config.provider ?? `legacy-${input.slot}`,
+    model: input.config.model,
+    adapterId: input.config.adapterId ?? "openai_compatible",
+    protocol: input.config.protocol ?? "openai_chat_completions",
+    capabilities: Object.freeze({ ...capabilities }),
+    selectedAt: new Date().toISOString(),
+    selectionReason: input.selectionReason,
+    fallbackIndex: input.fallbackIndex ?? 0,
+    source: input.source,
+  };
+  return Object.freeze(snapshot);
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -140,88 +165,11 @@ function booleanFromSetting(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
-function resolveApiKey(profile: ApiKeyLibraryProfile, env: NodeJS.ProcessEnv): string | undefined {
-  const inline = profile.apiKey?.trim();
-  if (inline) {
-    return inline;
-  }
-
-  if (!profile.apiKeyEnvName) {
-    return undefined;
-  }
-
-  const fromEnv = env[profile.apiKeyEnvName]?.trim();
-  return fromEnv || undefined;
-}
-
-async function loadApiKeyLibrary(
-  workspaceRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<ApiKeyLibrary> {
-  const libraryPath = resolveApiKeyLibraryPath(workspaceRoot, env);
-  if (!libraryPath) {
-    throw new Error(buildMissingApiKeyLibraryMessage(workspaceRoot, env));
-  }
-  const raw = await readFile(libraryPath, "utf8");
-  return JSON.parse(raw) as ApiKeyLibrary;
-}
-
-function loadApiKeyLibrarySync(
-  workspaceRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): ApiKeyLibrary {
-  const libraryPath = resolveApiKeyLibraryPath(workspaceRoot, env);
-  if (!libraryPath) {
-    throw new Error(buildMissingApiKeyLibraryMessage(workspaceRoot, env));
-  }
-  const raw = readFileSync(libraryPath, "utf8");
-  return JSON.parse(raw) as ApiKeyLibrary;
-}
-
-function ancestorApiKeyLibraryPaths(start: string): string[] {
-  const candidates: string[] = [];
-  let current = path.resolve(start);
-  while (true) {
-    candidates.push(path.join(current, ".deep-mix", "api-key-library", "profiles.local.json"));
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return candidates;
-}
-
-function candidateApiKeyLibraryPaths(
-  workspaceRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string[] {
-  const configuredFallbackRoot = env.DEEP_MIX_API_KEY_LIBRARY_ROOT?.trim();
-  const candidates = [
-    path.resolve(workspaceRoot, ".deep-mix", "api-key-library", "profiles.local.json"),
-    ...(configuredFallbackRoot
-      ? [path.resolve(configuredFallbackRoot, ".deep-mix", "api-key-library", "profiles.local.json")]
-      : []),
-    ...ancestorApiKeyLibraryPaths(process.cwd()),
-  ];
-  return [...new Set(candidates)];
-}
-
-function buildMissingApiKeyLibraryMessage(
-  workspaceRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const searched = candidateApiKeyLibraryPaths(workspaceRoot, env);
-  return [
-    "Could not find .deep-mix/api-key-library/profiles.local.json.",
-    `Searched: ${searched.join(" | ")}`,
-    "Create the local API key library in the target workspace, or launch Deep-Mix from a directory that already contains it.",
-  ].join(" ");
-}
-
 export function resolveApiKeyLibraryPath(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  return candidateApiKeyLibraryPaths(workspaceRoot, env).find((candidate) => existsSync(candidate));
+  return new ProfileService(workspaceRoot, env).resolveLibraryPath();
 }
 
 export function inspectApiKeyLibraryProfiles<const TName extends string>(
@@ -229,174 +177,79 @@ export function inspectApiKeyLibraryProfiles<const TName extends string>(
   profileNames: readonly TName[],
   env: NodeJS.ProcessEnv = process.env,
 ): Record<TName, ApiKeyLibraryProfileStatus> {
-  const libraries = candidateApiKeyLibraryPaths(workspaceRoot, env).flatMap((libraryPath) => {
-    if (!existsSync(libraryPath)) return [];
-    try {
-      return [JSON.parse(readFileSync(libraryPath, "utf8")) as ApiKeyLibrary];
-    } catch {
-      return [];
-    }
-  });
-  const expectedRoles: Record<string, string> = {
-    deepseek_governor: "governor",
-    glm_coding_worker: "coding_worker",
-    kimi_vision: "vision_worker",
-  };
-  return Object.fromEntries(profileNames.map((profileName) => {
-    const expectedRole = expectedRoles[profileName];
-    const profile = libraries
-      .map((library) => library.profiles?.[profileName])
-      .find((candidate) => !!candidate && (!expectedRole || candidate.role === expectedRole));
-    return [profileName, {
-      exists: !!profile,
-      hasKey: !!profile && !!resolveApiKey(profile, env),
-    }];
-  })) as Record<TName, ApiKeyLibraryProfileStatus>;
+  const statuses = new ProfileService(workspaceRoot, env).inspect(profileNames);
+  return Object.fromEntries(profileNames.map((profileName) => [profileName, {
+    exists: statuses[profileName].exists,
+    hasKey: statuses[profileName].hasKey,
+  }])) as Record<TName, ApiKeyLibraryProfileStatus>;
 }
 
-async function loadRequiredProfile(
-  workspaceRoot: string,
-  profileName: string,
-  expectedRole: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<ApiKeyLibraryProfile> {
-  let foundRoleMismatch: string | undefined;
-  for (const libraryPath of candidateApiKeyLibraryPaths(workspaceRoot, env)) {
-    if (!existsSync(libraryPath)) {
-      continue;
-    }
-    const raw = await readFile(libraryPath, "utf8");
-    const library = JSON.parse(raw) as ApiKeyLibrary;
-    const profile = library.profiles[profileName];
-    if (!profile) {
-      continue;
-    }
-    if (profile.role !== expectedRole) {
-      foundRoleMismatch = profile.role;
-      continue;
-    }
-    return profile;
-  }
-  if (foundRoleMismatch) {
-    throw new Error(`Profile ${profileName} has role ${foundRoleMismatch}, expected ${expectedRole}.`);
-  }
-  throw new Error(`Missing profile in local API key library: ${profileName}`);
+function environmentValue(
+  env: NodeJS.ProcessEnv,
+  genericName: string,
+  legacyName: string,
+  settingsVersion: number | undefined,
+): string | undefined {
+  return env[genericName]?.trim() || (settingsVersion === 2 ? undefined : env[legacyName]?.trim());
 }
 
-function loadRequiredProfileSync(
-  workspaceRoot: string,
-  profileName: string,
-  expectedRole: string,
-  env: NodeJS.ProcessEnv = process.env,
-): ApiKeyLibraryProfile {
-  let foundRoleMismatch: string | undefined;
-  for (const libraryPath of candidateApiKeyLibraryPaths(workspaceRoot, env)) {
-    if (!existsSync(libraryPath)) {
-      continue;
-    }
-    const raw = readFileSync(libraryPath, "utf8");
-    const library = JSON.parse(raw) as ApiKeyLibrary;
-    const profile = library.profiles[profileName];
-    if (!profile) {
-      continue;
-    }
-    if (profile.role !== expectedRole) {
-      foundRoleMismatch = profile.role;
-      continue;
-    }
-    return profile;
-  }
-  if (foundRoleMismatch) {
-    throw new Error(`Profile ${profileName} has role ${foundRoleMismatch}, expected ${expectedRole}.`);
-  }
-  throw new Error(`Missing profile in local API key library: ${profileName}`);
+function modelSourceFromEnvironment(
+  env: NodeJS.ProcessEnv,
+  slot: "governor" | "coding" | "vision",
+  settingsVersion: number | undefined,
+  preset: "classic" | "custom",
+): ModelAssignmentSnapshot["source"] {
+  const genericPrefix = `DEEP_MIX_${slot.toUpperCase()}_`;
+  const legacyPrefixes = slot === "governor"
+    ? ["DEEPSEEK_"]
+    : slot === "coding"
+      ? ["GLM_CODING_WORKER_"]
+      : ["KIMI_VISION_WORKER_"];
+  const hasOverride = Object.entries(env).some(([name, value]) => Boolean(value?.trim()) && (
+    name.startsWith(genericPrefix) || (settingsVersion !== 2 && legacyPrefixes.some((prefix) => name.startsWith(prefix)))
+  ));
+  return hasOverride ? "environment" : preset === "classic" ? "classic" : "settings";
 }
 
-async function loadOptionalProfileWithFallback(
-  workspaceRoot: string,
-  input: {
-    explicitProfileName?: string;
-    configuredProfileName?: string;
-    defaultProfileName: string;
-    expectedRole: string;
-  },
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<ApiKeyLibraryProfile> {
-  if (input.explicitProfileName) {
-    return loadRequiredProfile(workspaceRoot, input.explicitProfileName, input.expectedRole, env);
+function assertSlotProfile(
+  service: ProfileService,
+  slot: "governor" | "coding" | "vision",
+  profileId: string,
+  requirements: import("../../shared-schema/src/index.js").ModelSlotBinding["requirements"],
+): void {
+  const mandatory = slot === "governor"
+    ? { textInput: true }
+    : slot === "coding"
+      ? { textInput: true, structuredOutput: true }
+      : { textInput: true, imageInput: true, structuredOutput: true };
+  const gate = service.gate(slot, profileId, { ...mandatory, ...(requirements ?? {}) });
+  if (!gate.ok) {
+    throw new Error(`capability_unavailable: slot=${slot}; profile=${profileId}; missing=${gate.missing.join(",")}`);
   }
-  if (input.configuredProfileName) {
-    try {
-      return await loadRequiredProfile(workspaceRoot, input.configuredProfileName, input.expectedRole, env);
-    } catch (error) {
-      if (input.configuredProfileName !== input.defaultProfileName) {
-        return loadRequiredProfile(workspaceRoot, input.defaultProfileName, input.expectedRole, env);
-      }
-      throw error;
-    }
+  if (!gate.profile.adapterId) {
+    throw new Error(`adapter_not_found: profile=${profileId}; protocol=${gate.profile.protocol}`);
   }
-  return loadRequiredProfile(workspaceRoot, input.defaultProfileName, input.expectedRole, env);
 }
 
-function loadOptionalProfileSyncWithFallback(
-  workspaceRoot: string,
-  input: {
-    explicitProfileName?: string;
-    configuredProfileName?: string;
-    defaultProfileName: string;
-    expectedRole: string;
-  },
-  env: NodeJS.ProcessEnv = process.env,
-): ApiKeyLibraryProfile {
-  if (input.explicitProfileName) {
-    return loadRequiredProfileSync(workspaceRoot, input.explicitProfileName, input.expectedRole, env);
-  }
-  if (input.configuredProfileName) {
-    try {
-      return loadRequiredProfileSync(workspaceRoot, input.configuredProfileName, input.expectedRole, env);
-    } catch (error) {
-      if (input.configuredProfileName !== input.defaultProfileName) {
-        return loadRequiredProfileSync(workspaceRoot, input.defaultProfileName, input.expectedRole, env);
-      }
-      throw error;
-    }
-  }
-  return loadRequiredProfileSync(workspaceRoot, input.defaultProfileName, input.expectedRole, env);
-}
-
-export function loadDeepSeekProviderConfig(
+export function loadGovernorModelConfig(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: DeepSeekProviderConfigLoadOptions = {},
-): DeepSeekProviderConfig {
+): GovernorModelConfig {
   const loadedSettings = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
   const governorSettings = loadedSettings.settings.governor ?? {};
-  let profile: ApiKeyLibraryProfile;
-  try {
-    profile = loadOptionalProfileSyncWithFallback(workspaceRoot, {
-      explicitProfileName: env.DEEPSEEK_GOVERNOR_PROFILE,
-      configuredProfileName: stringFromSetting(governorSettings.profile),
-      defaultProfileName: "deepseek_governor",
-      expectedRole: "governor",
-    }, env);
-  } catch (error) {
-    const isMissingProfile = error instanceof Error &&
-      error.message.startsWith("Missing profile in local API key library:");
-    if (!options.allowMissingProfileForInjectedClient || !isMissingProfile) {
-      throw error;
-    }
-    profile = {
-      provider: "deepseek",
-      role: "governor",
-      baseUrl: "https://example.invalid",
-      chatPath: "/chat/completions",
-      model: "deepseek-chat",
-    };
-  }
-  const contextWindow = parseInteger(env.DEEPSEEK_CONTEXT_WINDOW, numberFromSetting(governorSettings.contextWindow) ?? 128000);
+  const binding = resolveEffectiveModelSettings(loadedSettings.settings).slots.governor;
+  const service = new ProfileService(workspaceRoot, env);
+  const profileId = environmentValue(env, "DEEP_MIX_GOVERNOR_PROFILE", "DEEPSEEK_GOVERNOR_PROFILE", loadedSettings.settings.version)
+    ?? binding.primary.profile;
+  assertSlotProfile(service, "governor", profileId, binding.requirements);
+  const modelOverride = environmentValue(env, "DEEP_MIX_GOVERNOR_MODEL", "DEEPSEEK_MODEL", loadedSettings.settings.version)
+    ?? binding.primary.model
+    ?? stringFromSetting(governorSettings.model);
+  const profile = service.resolveProfile(profileId, modelOverride);
+  const contextWindow = parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_WINDOW", "DEEPSEEK_CONTEXT_WINDOW", loadedSettings.settings.version), numberFromSetting(governorSettings.contextWindow) ?? profile.capabilities.contextWindow);
   const reserveOutputTokens = clampInteger(
     parseInteger(
-      env.DEEPSEEK_CONTEXT_RESERVE_OUTPUT_TOKENS,
+      environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_RESERVE_OUTPUT_TOKENS", "DEEPSEEK_CONTEXT_RESERVE_OUTPUT_TOKENS", loadedSettings.settings.version),
       numberFromSetting(governorSettings.contextReserveOutputTokens) ??
       Math.min(8192, Math.max(2048, Math.floor(contextWindow * 0.08))),
     ),
@@ -405,13 +258,13 @@ export function loadDeepSeekProviderConfig(
   );
   const inputBudgetCeiling = Math.max(2048, contextWindow - reserveOutputTokens);
   const contextSoftLimitTokens = clampInteger(
-    parseInteger(env.DEEPSEEK_CONTEXT_SOFT_LIMIT_TOKENS, numberFromSetting(governorSettings.contextSoftLimitTokens) ?? inputBudgetCeiling),
+    parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_SOFT_LIMIT_TOKENS", "DEEPSEEK_CONTEXT_SOFT_LIMIT_TOKENS", loadedSettings.settings.version), numberFromSetting(governorSettings.contextSoftLimitTokens) ?? inputBudgetCeiling),
     2048,
     inputBudgetCeiling,
   );
   const contextCompactThresholdTokens = clampInteger(
     parseInteger(
-      env.DEEPSEEK_CONTEXT_COMPACT_THRESHOLD_TOKENS,
+      environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_COMPACT_THRESHOLD_TOKENS", "DEEPSEEK_CONTEXT_COMPACT_THRESHOLD_TOKENS", loadedSettings.settings.version),
       numberFromSetting(governorSettings.contextCompactThresholdTokens) ??
       Math.max(2048, contextSoftLimitTokens - Math.max(2048, Math.floor(contextWindow * 0.12))),
     ),
@@ -419,13 +272,13 @@ export function loadDeepSeekProviderConfig(
     contextSoftLimitTokens,
   );
   const contextSummaryMaxTokens = clampInteger(
-    parseInteger(env.DEEPSEEK_CONTEXT_SUMMARY_MAX_TOKENS, numberFromSetting(governorSettings.contextSummaryMaxTokens) ?? 2048),
+    parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_SUMMARY_MAX_TOKENS", "DEEPSEEK_CONTEXT_SUMMARY_MAX_TOKENS", loadedSettings.settings.version), numberFromSetting(governorSettings.contextSummaryMaxTokens) ?? 2048),
     256,
     contextSoftLimitTokens,
   );
   const contextRecentTailMaxTokens = clampInteger(
     parseInteger(
-      env.DEEPSEEK_CONTEXT_RECENT_TAIL_MAX_TOKENS,
+      environmentValue(env, "DEEP_MIX_GOVERNOR_CONTEXT_RECENT_TAIL_MAX_TOKENS", "DEEPSEEK_CONTEXT_RECENT_TAIL_MAX_TOKENS", loadedSettings.settings.version),
       numberFromSetting(governorSettings.contextRecentTailMaxTokens) ??
       Math.max(4096, Math.floor(contextSoftLimitTokens * 0.35)),
     ),
@@ -433,98 +286,253 @@ export function loadDeepSeekProviderConfig(
     contextSoftLimitTokens,
   );
   return {
-    apiKey: resolveApiKey(profile, env),
-    baseUrl: env.DEEPSEEK_BASE_URL?.replace(/\/$/, "") ?? profile.baseUrl.replace(/\/$/, ""),
-    endpointPath: env.DEEPSEEK_ENDPOINT_PATH ?? profile.chatPath,
-    model: env.DEEPSEEK_MODEL ?? stringFromSetting(governorSettings.model) ?? profile.model,
+    apiKey: profile.apiKey,
+    profileId: profile.profileId,
+    provider: profile.provider,
+    adapterId: profile.adapterId,
+    protocol: profile.protocol,
+    capabilities: profile.capabilities,
+    baseUrl: environmentValue(env, "DEEP_MIX_GOVERNOR_BASE_URL", "DEEPSEEK_BASE_URL", loadedSettings.settings.version)?.replace(/\/$/, "") ?? profile.baseUrl.replace(/\/$/, ""),
+    endpointPath: environmentValue(env, "DEEP_MIX_GOVERNOR_ENDPOINT_PATH", "DEEPSEEK_ENDPOINT_PATH", loadedSettings.settings.version) ?? profile.endpointPath,
+    model: profile.model,
     role: "governor",
-    stream: parseBoolean(env.DEEPSEEK_STREAM, booleanFromSetting(governorSettings.stream) ?? true),
+    stream: parseBoolean(environmentValue(env, "DEEP_MIX_GOVERNOR_STREAM", "DEEPSEEK_STREAM", loadedSettings.settings.version), booleanFromSetting(governorSettings.stream) ?? true),
     contextWindow,
-    maxRetries: parseInteger(env.DEEPSEEK_MAX_RETRIES, numberFromSetting(governorSettings.maxRetries) ?? 2),
-    timeoutMs: parseInteger(env.DEEPSEEK_TIMEOUT_MS, numberFromSetting(governorSettings.timeoutMs) ?? 600_000),
+    maxRetries: parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_MAX_RETRIES", "DEEPSEEK_MAX_RETRIES", loadedSettings.settings.version), numberFromSetting(governorSettings.maxRetries) ?? 2),
+    timeoutMs: parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_TIMEOUT_MS", "DEEPSEEK_TIMEOUT_MS", loadedSettings.settings.version), numberFromSetting(governorSettings.timeoutMs) ?? 600_000),
     contextSoftLimitTokens,
     contextCompactThresholdTokens,
     contextReserveOutputTokens: reserveOutputTokens,
     contextSummaryMaxTokens,
     contextRecentTailMaxTokens,
-    maxHistoryMessages: parseInteger(env.DEEPSEEK_MAX_HISTORY_MESSAGES, numberFromSetting(governorSettings.maxHistoryMessages) ?? 0),
-    historyCharBudget: parseInteger(env.DEEPSEEK_HISTORY_CHAR_BUDGET, numberFromSetting(governorSettings.historyCharBudget) ?? 16000),
-    temperature: parseNumber(env.DEEPSEEK_TEMPERATURE, numberFromSetting(governorSettings.temperature) ?? 0.2),
+    maxHistoryMessages: parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_MAX_HISTORY_MESSAGES", "DEEPSEEK_MAX_HISTORY_MESSAGES", loadedSettings.settings.version), numberFromSetting(governorSettings.maxHistoryMessages) ?? 0),
+    historyCharBudget: parseInteger(environmentValue(env, "DEEP_MIX_GOVERNOR_HISTORY_CHAR_BUDGET", "DEEPSEEK_HISTORY_CHAR_BUDGET", loadedSettings.settings.version), numberFromSetting(governorSettings.historyCharBudget) ?? 16000),
+    temperature: parseNumber(environmentValue(env, "DEEP_MIX_GOVERNOR_TEMPERATURE", "DEEPSEEK_TEMPERATURE", loadedSettings.settings.version), numberFromSetting(governorSettings.temperature) ?? 0.2),
     thinking: {
-      type: parseThinkingMode(env.DEEPSEEK_THINKING_MODE ?? stringFromSetting(governorSettings.thinkingMode)),
-      reasoningEffort: parseReasoningEffort(env.DEEPSEEK_REASONING_EFFORT ?? stringFromSetting(governorSettings.reasoningEffort)),
+      type: parseThinkingMode(environmentValue(env, "DEEP_MIX_GOVERNOR_THINKING_MODE", "DEEPSEEK_THINKING_MODE", loadedSettings.settings.version) ?? stringFromSetting(governorSettings.thinkingMode)),
+      reasoningEffort: parseReasoningEffort(environmentValue(env, "DEEP_MIX_GOVERNOR_REASONING_EFFORT", "DEEPSEEK_REASONING_EFFORT", loadedSettings.settings.version) ?? stringFromSetting(governorSettings.reasoningEffort)),
     },
-    replyStyle: parseReplyStyle(env.DEEPSEEK_REPLY_STYLE ?? stringFromSetting(governorSettings.replyStyle)),
+    headers: profile.headers,
+    requestDefaults: profile.requestDefaults,
+    replyStyle: parseReplyStyle(environmentValue(env, "DEEP_MIX_GOVERNOR_REPLY_STYLE", "DEEPSEEK_REPLY_STYLE", loadedSettings.settings.version) ?? stringFromSetting(governorSettings.replyStyle)),
   };
 }
 
-export async function loadGlmCodingWorkerConfig(
+export function loadGovernorModelCandidates(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<GlmCodingWorkerConfig> {
+): {
+  configs: GovernorModelConfig[];
+  fallbackPolicy: import("../../shared-schema/src/index.js").ModelFallbackPolicy;
+  settingsRevision: number;
+  preset: "classic" | "custom";
+  source: ModelAssignmentSnapshot["source"];
+} {
+  const loaded = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
+  const models = resolveEffectiveModelSettings(loaded.settings);
+  const binding = models.slots.governor;
+  const primary = loadGovernorModelConfig(workspaceRoot, env);
+  const policy = binding.fallbackPolicy ?? { enabled: false, on: [] };
+  const service = new ProfileService(workspaceRoot, env);
+  const fallbacks = policy.enabled ? binding.fallbacks.map((reference): GovernorModelConfig => {
+    assertSlotProfile(service, "governor", reference.profile, binding.requirements);
+    const profile = service.resolveProfile(reference.profile, reference.model);
+    return {
+      ...primary,
+      apiKey: profile.apiKey,
+      profileId: profile.profileId,
+      provider: profile.provider,
+      adapterId: profile.adapterId,
+      protocol: profile.protocol,
+      capabilities: profile.capabilities,
+      baseUrl: profile.baseUrl,
+      endpointPath: profile.endpointPath,
+      model: profile.model,
+      headers: profile.headers,
+      requestDefaults: profile.requestDefaults,
+    };
+  }) : [];
+  return {
+    configs: [primary, ...fallbacks],
+    fallbackPolicy: policy,
+    settingsRevision: loaded.settings.version === 2 ? loaded.settings.revision ?? 0 : 0,
+    preset: models.preset,
+    source: modelSourceFromEnvironment(env, "governor", loaded.settings.version, models.preset),
+  };
+}
+
+export async function loadCodingWorkerModelConfig(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CodingWorkerModelConfig> {
   const loadedSettings = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
   const workerSettings = loadedSettings.settings.codingWorker ?? {};
-  const profile = await loadOptionalProfileWithFallback(workspaceRoot, {
-    explicitProfileName: env.GLM_CODING_WORKER_PROFILE,
-    configuredProfileName: stringFromSetting(workerSettings.profile),
-    defaultProfileName: "glm_coding_worker",
-    expectedRole: "coding_worker",
-  }, env);
+  const binding = resolveEffectiveModelSettings(loadedSettings.settings).slots.coding;
+  const service = new ProfileService(workspaceRoot, env);
+  const profileId = environmentValue(env, "DEEP_MIX_CODING_PROFILE", "GLM_CODING_WORKER_PROFILE", loadedSettings.settings.version)
+    ?? binding.primary.profile;
+  assertSlotProfile(service, "coding", profileId, binding.requirements);
+  const modelOverride = environmentValue(env, "DEEP_MIX_CODING_MODEL", "GLM_CODING_WORKER_MODEL", loadedSettings.settings.version)
+    ?? binding.primary.model
+    ?? stringFromSetting(workerSettings.model);
+  const profile = service.resolveProfile(profileId, modelOverride);
   return {
-    apiKey: resolveApiKey(profile, env),
+    apiKey: profile.apiKey,
+    profileId: profile.profileId,
+    provider: profile.provider,
+    adapterId: profile.adapterId,
+    protocol: profile.protocol,
+    capabilities: profile.capabilities,
     baseUrl: profile.baseUrl.replace(/\/$/, ""),
-    endpointPath: profile.chatPath,
-    model: stringFromSetting(workerSettings.model) ?? profile.model,
+    endpointPath: profile.endpointPath,
+    model: profile.model,
     role: "coding_worker",
-    contextWindow: parseInteger(env.GLM_CODING_WORKER_CONTEXT_WINDOW, numberFromSetting(workerSettings.contextWindow) ?? 128000),
-    maxRetries: parseInteger(env.GLM_CODING_WORKER_MAX_RETRIES, numberFromSetting(workerSettings.maxRetries) ?? 1),
-    timeoutMs: parseInteger(env.GLM_CODING_WORKER_TIMEOUT_MS, numberFromSetting(workerSettings.timeoutMs) ?? 180000),
-    temperature: parseNumber(env.GLM_CODING_WORKER_TEMPERATURE, numberFromSetting(workerSettings.temperature) ?? 0.1),
-    maxContextChars: parseInteger(env.GLM_CODING_WORKER_MAX_CONTEXT_CHARS, numberFromSetting(workerSettings.maxContextChars) ?? 24000),
-    maxContextFiles: parseInteger(env.GLM_CODING_WORKER_MAX_CONTEXT_FILES, numberFromSetting(workerSettings.maxContextFiles) ?? 6),
-    headers: profile.headers ?? { "Content-Type": "application/json" },
-    requestDefaults: profile.requestDefaults ?? {},
+    contextWindow: parseInteger(environmentValue(env, "DEEP_MIX_CODING_CONTEXT_WINDOW", "GLM_CODING_WORKER_CONTEXT_WINDOW", loadedSettings.settings.version), numberFromSetting(workerSettings.contextWindow) ?? profile.capabilities.contextWindow),
+    maxRetries: parseInteger(environmentValue(env, "DEEP_MIX_CODING_MAX_RETRIES", "GLM_CODING_WORKER_MAX_RETRIES", loadedSettings.settings.version), numberFromSetting(workerSettings.maxRetries) ?? 1),
+    timeoutMs: parseInteger(environmentValue(env, "DEEP_MIX_CODING_TIMEOUT_MS", "GLM_CODING_WORKER_TIMEOUT_MS", loadedSettings.settings.version), numberFromSetting(workerSettings.timeoutMs) ?? 180000),
+    temperature: parseNumber(environmentValue(env, "DEEP_MIX_CODING_TEMPERATURE", "GLM_CODING_WORKER_TEMPERATURE", loadedSettings.settings.version), numberFromSetting(workerSettings.temperature) ?? 0.1),
+    maxContextChars: parseInteger(environmentValue(env, "DEEP_MIX_CODING_MAX_CONTEXT_CHARS", "GLM_CODING_WORKER_MAX_CONTEXT_CHARS", loadedSettings.settings.version), numberFromSetting(workerSettings.maxContextChars) ?? 24000),
+    maxContextFiles: parseInteger(environmentValue(env, "DEEP_MIX_CODING_MAX_CONTEXT_FILES", "GLM_CODING_WORKER_MAX_CONTEXT_FILES", loadedSettings.settings.version), numberFromSetting(workerSettings.maxContextFiles) ?? 6),
+    headers: profile.headers,
+    requestDefaults: profile.requestDefaults,
     workspaceWriteAccess: false,
   };
 }
 
-export async function loadKimiVisionWorkerConfig(
+export async function loadCodingWorkerModelCandidates(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<KimiVisionWorkerConfig> {
-  const loadedSettings = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
-  const workerSettings = loadedSettings.settings.visionWorker ?? {};
-  const profile = await loadOptionalProfileWithFallback(workspaceRoot, {
-    explicitProfileName: env.KIMI_VISION_WORKER_PROFILE,
-    configuredProfileName: stringFromSetting(workerSettings.profile),
-    defaultProfileName: "kimi_vision",
-    expectedRole: "vision_worker",
-  }, env);
+): Promise<{
+  configs: CodingWorkerModelConfig[];
+  fallbackPolicy: import("../../shared-schema/src/index.js").ModelFallbackPolicy;
+  settingsRevision: number;
+  preset: "classic" | "custom";
+  source: ModelAssignmentSnapshot["source"];
+}> {
+  const loaded = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
+  const models = resolveEffectiveModelSettings(loaded.settings);
+  const binding = models.slots.coding;
+  const primary = await loadCodingWorkerModelConfig(workspaceRoot, env);
+  const policy = binding.fallbackPolicy ?? { enabled: false, on: [] };
+  const service = new ProfileService(workspaceRoot, env);
+  const fallbacks = policy.enabled ? binding.fallbacks.map((reference): CodingWorkerModelConfig => {
+    assertSlotProfile(service, "coding", reference.profile, binding.requirements);
+    const profile = service.resolveProfile(reference.profile, reference.model);
+    return {
+      ...primary,
+      apiKey: profile.apiKey,
+      profileId: profile.profileId,
+      provider: profile.provider,
+      adapterId: profile.adapterId,
+      protocol: profile.protocol,
+      capabilities: profile.capabilities,
+      baseUrl: profile.baseUrl,
+      endpointPath: profile.endpointPath,
+      model: profile.model,
+      contextWindow: profile.capabilities.contextWindow,
+      headers: profile.headers,
+      requestDefaults: profile.requestDefaults,
+    };
+  }) : [];
   return {
-    apiKey: resolveApiKey(profile, env),
-    baseUrl: profile.baseUrl.replace(/\/$/, ""),
-    endpointPath: profile.chatPath,
-    model: stringFromSetting(workerSettings.model) ?? profile.model,
-    role: "vision_worker",
-    contextWindow: parseInteger(env.KIMI_VISION_WORKER_CONTEXT_WINDOW, numberFromSetting(workerSettings.contextWindow) ?? 256000),
-    maxRetries: parseInteger(env.KIMI_VISION_WORKER_MAX_RETRIES, numberFromSetting(workerSettings.maxRetries) ?? 1),
-    timeoutMs: parseInteger(env.KIMI_VISION_WORKER_TIMEOUT_MS, numberFromSetting(workerSettings.timeoutMs) ?? 120000),
-    maxContextChars: parseInteger(env.KIMI_VISION_WORKER_MAX_CONTEXT_CHARS, numberFromSetting(workerSettings.maxContextChars) ?? 12000),
-    maxImageBytes: parseInteger(env.KIMI_VISION_WORKER_MAX_IMAGE_BYTES, numberFromSetting(workerSettings.maxImageBytes) ?? 20 * 1024 * 1024),
-    maxImageDimension: parseInteger(env.KIMI_VISION_WORKER_MAX_IMAGE_DIMENSION, numberFromSetting(workerSettings.maxImageDimension) ?? 4096),
-    targetImageDimension: parseInteger(env.KIMI_VISION_WORKER_TARGET_IMAGE_DIMENSION, numberFromSetting(workerSettings.targetImageDimension) ?? 2048),
-    targetImageBytes: parseInteger(env.KIMI_VISION_WORKER_TARGET_IMAGE_BYTES, numberFromSetting(workerSettings.targetImageBytes) ?? 4 * 1024 * 1024),
-    imageInputMode: "base64_data_url",
-    responseFormat: "json_object",
-    headers: profile.headers ?? { "Content-Type": "application/json" },
-    requestDefaults: profile.requestDefaults ?? {},
-    supportsMultimodalInput: profile.supportsMultimodalInput ?? true,
+    configs: [primary, ...fallbacks],
+    fallbackPolicy: policy,
+    settingsRevision: loaded.settings.version === 2 ? loaded.settings.revision ?? 0 : 0,
+    preset: models.preset,
+    source: modelSourceFromEnvironment(env, "coding", loaded.settings.version, models.preset),
   };
 }
 
-export function createGovernorRouteProfile(config: DeepSeekProviderConfig): RouteProfile {
+export async function loadVisionWorkerModelConfig(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<VisionWorkerModelConfig> {
+  const loadedSettings = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
+  const workerSettings = loadedSettings.settings.visionWorker ?? {};
+  const binding = resolveEffectiveModelSettings(loadedSettings.settings).slots.vision;
+  const service = new ProfileService(workspaceRoot, env);
+  const profileId = environmentValue(env, "DEEP_MIX_VISION_PROFILE", "KIMI_VISION_WORKER_PROFILE", loadedSettings.settings.version)
+    ?? binding.primary.profile;
+  assertSlotProfile(service, "vision", profileId, binding.requirements);
+  const modelOverride = environmentValue(env, "DEEP_MIX_VISION_MODEL", "KIMI_VISION_WORKER_MODEL", loadedSettings.settings.version)
+    ?? binding.primary.model
+    ?? stringFromSetting(workerSettings.model);
+  const profile = service.resolveProfile(profileId, modelOverride);
   return {
-    provider: "deepseek",
+    apiKey: profile.apiKey,
+    profileId: profile.profileId,
+    provider: profile.provider,
+    adapterId: profile.adapterId,
+    protocol: profile.protocol,
+    capabilities: profile.capabilities,
+    baseUrl: profile.baseUrl.replace(/\/$/, ""),
+    endpointPath: profile.endpointPath,
+    model: profile.model,
+    role: "vision_worker",
+    contextWindow: parseInteger(environmentValue(env, "DEEP_MIX_VISION_CONTEXT_WINDOW", "KIMI_VISION_WORKER_CONTEXT_WINDOW", loadedSettings.settings.version), numberFromSetting(workerSettings.contextWindow) ?? profile.capabilities.contextWindow),
+    maxRetries: parseInteger(environmentValue(env, "DEEP_MIX_VISION_MAX_RETRIES", "KIMI_VISION_WORKER_MAX_RETRIES", loadedSettings.settings.version), numberFromSetting(workerSettings.maxRetries) ?? 1),
+    timeoutMs: parseInteger(environmentValue(env, "DEEP_MIX_VISION_TIMEOUT_MS", "KIMI_VISION_WORKER_TIMEOUT_MS", loadedSettings.settings.version), numberFromSetting(workerSettings.timeoutMs) ?? 120000),
+    maxContextChars: parseInteger(environmentValue(env, "DEEP_MIX_VISION_MAX_CONTEXT_CHARS", "KIMI_VISION_WORKER_MAX_CONTEXT_CHARS", loadedSettings.settings.version), numberFromSetting(workerSettings.maxContextChars) ?? 12000),
+    maxImageBytes: parseInteger(environmentValue(env, "DEEP_MIX_VISION_MAX_IMAGE_BYTES", "KIMI_VISION_WORKER_MAX_IMAGE_BYTES", loadedSettings.settings.version), numberFromSetting(workerSettings.maxImageBytes) ?? 20 * 1024 * 1024),
+    maxImageDimension: parseInteger(environmentValue(env, "DEEP_MIX_VISION_MAX_IMAGE_DIMENSION", "KIMI_VISION_WORKER_MAX_IMAGE_DIMENSION", loadedSettings.settings.version), numberFromSetting(workerSettings.maxImageDimension) ?? 4096),
+    targetImageDimension: parseInteger(environmentValue(env, "DEEP_MIX_VISION_TARGET_IMAGE_DIMENSION", "KIMI_VISION_WORKER_TARGET_IMAGE_DIMENSION", loadedSettings.settings.version), numberFromSetting(workerSettings.targetImageDimension) ?? 2048),
+    targetImageBytes: parseInteger(environmentValue(env, "DEEP_MIX_VISION_TARGET_IMAGE_BYTES", "KIMI_VISION_WORKER_TARGET_IMAGE_BYTES", loadedSettings.settings.version), numberFromSetting(workerSettings.targetImageBytes) ?? 4 * 1024 * 1024),
+    imageInputMode: "base64_data_url",
+    responseFormat: "json_object",
+    headers: profile.headers,
+    requestDefaults: profile.requestDefaults,
+    supportsMultimodalInput: profile.capabilities.imageInput,
+  };
+}
+
+export async function loadVisionWorkerModelCandidates(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{
+  configs: VisionWorkerModelConfig[];
+  fallbackPolicy: import("../../shared-schema/src/index.js").ModelFallbackPolicy;
+  settingsRevision: number;
+  preset: "classic" | "custom";
+  source: ModelAssignmentSnapshot["source"];
+}> {
+  const loaded = loadDeepMixSettingsSync(workspaceRoot, { collectErrors: false });
+  const models = resolveEffectiveModelSettings(loaded.settings);
+  const binding = models.slots.vision;
+  const primary = await loadVisionWorkerModelConfig(workspaceRoot, env);
+  const policy = binding.fallbackPolicy ?? { enabled: false, on: [] };
+  const service = new ProfileService(workspaceRoot, env);
+  const fallbacks = policy.enabled ? binding.fallbacks.map((reference): VisionWorkerModelConfig => {
+    assertSlotProfile(service, "vision", reference.profile, binding.requirements);
+    const profile = service.resolveProfile(reference.profile, reference.model);
+    return {
+      ...primary,
+      apiKey: profile.apiKey,
+      profileId: profile.profileId,
+      provider: profile.provider,
+      adapterId: profile.adapterId,
+      protocol: profile.protocol,
+      capabilities: profile.capabilities,
+      baseUrl: profile.baseUrl,
+      endpointPath: profile.endpointPath,
+      model: profile.model,
+      contextWindow: profile.capabilities.contextWindow,
+      headers: profile.headers,
+      requestDefaults: profile.requestDefaults,
+      supportsMultimodalInput: profile.capabilities.imageInput,
+    };
+  }) : [];
+  return {
+    configs: [primary, ...fallbacks],
+    fallbackPolicy: policy,
+    settingsRevision: loaded.settings.version === 2 ? loaded.settings.revision ?? 0 : 0,
+    preset: models.preset,
+    source: modelSourceFromEnvironment(env, "vision", loaded.settings.version, models.preset),
+  };
+}
+
+export function createGovernorRouteProfile(config: GovernorModelConfig): RouteProfile {
+  return {
+    provider: config.provider ?? "legacy-governor",
     model: config.model,
     role: "governor",
     contextWindow: config.contextWindow,
@@ -546,9 +554,9 @@ export function createGovernorRouteProfile(config: DeepSeekProviderConfig): Rout
   };
 }
 
-export function createCodingWorkerRouteProfile(config: GlmCodingWorkerConfig): RouteProfile {
+export function createCodingWorkerRouteProfile(config: CodingWorkerModelConfig): RouteProfile {
   return {
-    provider: "glm",
+    provider: config.provider ?? "legacy-coding",
     model: config.model,
     role: "coding_worker",
     contextWindow: config.contextWindow,
@@ -570,9 +578,9 @@ export function createCodingWorkerRouteProfile(config: GlmCodingWorkerConfig): R
   };
 }
 
-export function createVisionWorkerRouteProfile(config: KimiVisionWorkerConfig): RouteProfile {
+export function createVisionWorkerRouteProfile(config: VisionWorkerModelConfig): RouteProfile {
   return {
-    provider: "kimi",
+    provider: config.provider ?? "legacy-vision",
     model: config.model,
     role: "vision_worker",
     contextWindow: config.contextWindow,
@@ -594,7 +602,7 @@ export function createVisionWorkerRouteProfile(config: KimiVisionWorkerConfig): 
   };
 }
 
-export function resolveDeepSeekRequestConfig(route: RouteProfile, config: DeepSeekProviderConfig): {
+export function resolveDeepSeekRequestConfig(route: RouteProfile, config: GovernorModelConfig): {
   model: string;
   stream: boolean;
   temperature: number;
@@ -602,7 +610,7 @@ export function resolveDeepSeekRequestConfig(route: RouteProfile, config: DeepSe
   extraBody?: Record<string, unknown>;
 } {
   if (route.role !== "governor") {
-    throw new Error(`DeepSeek request config only supports governor role, received ${route.role}.`);
+    throw new Error(`Governor request config only supports governor role, received ${route.role}.`);
   }
 
   const requestConfig: {
@@ -631,3 +639,15 @@ export function resolveDeepSeekRequestConfig(route: RouteProfile, config: DeepSe
 
   return requestConfig;
 }
+
+/** @deprecated Use loadGovernorModelConfig. */
+export const loadDeepSeekProviderConfig = loadGovernorModelConfig;
+/** @deprecated Use loadCodingWorkerModelConfig. */
+export const loadGlmCodingWorkerConfig = loadCodingWorkerModelConfig;
+/** @deprecated Use loadVisionWorkerModelConfig. */
+export const loadKimiVisionWorkerConfig = loadVisionWorkerModelConfig;
+
+/** @deprecated Classic compatibility aliases. */
+export type GlmCodingWorkerConfig = CodingWorkerModelConfig;
+/** @deprecated Classic compatibility aliases. */
+export type KimiVisionWorkerConfig = VisionWorkerModelConfig;

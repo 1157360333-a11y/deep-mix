@@ -254,6 +254,7 @@ async function gitRepositoryContext(context: AnyGitContext): Promise<GitReposito
   }
   return {
     workspaceRoot: context.workspaceRoot,
+    managedWorktreeRoot: services.paths.resolveState("worktrees"),
     gitExecutable: capability.command,
     processes: services.processes,
     clock: services.clock,
@@ -1395,13 +1396,18 @@ async function resolveManagedWorktreePath(
 ): Promise<ManagedWorktreePath> {
   const services = moduleContext(context);
   const normalized = normalizeGitPath(requestedPath);
-  const absolutePath = services.paths.resolveWorkspace(normalized);
   const configured = services.settings.git?.worktreeRoots;
   const roots = configured && configured.length > 0 ? configured : [".deep-mix/worktrees"];
+  const usingExternalDefault = !configured || configured.length === 0;
+  const absolutePath = usingExternalDefault && (normalized === ".deep-mix/worktrees" || normalized.startsWith(".deep-mix/worktrees/"))
+    ? path.resolve(services.paths.resolveState("worktrees"), path.posix.relative(".deep-mix/worktrees", normalized))
+    : services.paths.resolveWorkspace(normalized);
   let matched: { input: string; absolute: string } | undefined;
   for (const rootInput of roots) {
     const safeRoot = normalizeGitPath(rootInput, { allowDot: true });
-    const absoluteRoot = services.paths.resolveWorkspace(safeRoot);
+    const absoluteRoot = usingExternalDefault
+      ? services.paths.resolveState("worktrees")
+      : services.paths.resolveWorkspace(safeRoot);
     if (path.resolve(absolutePath) !== path.resolve(absoluteRoot) && isInside(absoluteRoot, absolutePath)) {
       matched = { input: safeRoot, absolute: absoluteRoot };
       break;
@@ -1410,13 +1416,14 @@ async function resolveManagedWorktreePath(
   if (!matched) {
     throw new Error(`Worktree path is outside configured managed roots: ${requestedPath}.`);
   }
-  const workspaceRelativePath = normalizedWorkspacePath(context.workspaceRoot, absolutePath);
+  const workspaceRelativePath = normalized;
   if (isProtectedReadPath(workspaceRelativePath)) {
     throw new Error(`Worktree path is protected: ${workspaceRelativePath}.`);
   }
 
-  const [realWorkspace, existingAncestor, rootAncestor] = await Promise.all([
-    fs.realpath(context.workspaceRoot),
+  const trustRoot = usingExternalDefault ? services.paths.resolveState(".") : context.workspaceRoot;
+  const [realTrustRoot, existingAncestor, rootAncestor] = await Promise.all([
+    fs.realpath(trustRoot),
     nearestExistingAncestor(absolutePath),
     nearestExistingAncestor(matched.absolute),
   ]);
@@ -1424,8 +1431,8 @@ async function resolveManagedWorktreePath(
     fs.realpath(existingAncestor),
     fs.realpath(rootAncestor),
   ]);
-  if (!isInside(realWorkspace, realExistingAncestor) || !isInside(realWorkspace, realRootAncestor)) {
-    throw new Error(`Worktree path resolves outside the trusted workspace: ${requestedPath}.`);
+  if (!isInside(realTrustRoot, realExistingAncestor) || !isInside(realTrustRoot, realRootAncestor)) {
+    throw new Error(`Worktree path resolves outside the trusted managed root: ${requestedPath}.`);
   }
   if (isInside(matched.absolute, existingAncestor) && !isInside(realRootAncestor, realExistingAncestor)) {
     throw new Error(`Worktree path crosses a symlink outside its managed root: ${requestedPath}.`);

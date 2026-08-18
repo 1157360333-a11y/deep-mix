@@ -62,12 +62,13 @@ describe("API key library resolution", () => {
     const targetWorkspace = await createWorkspace("deep-mix-target-root-");
     await writeProfilesFile(launchRoot, "deepseek-from-launch-root");
     process.chdir(launchRoot);
+    const env = { DEEP_MIX_HOME: path.join(targetWorkspace, "isolated-home") };
 
-    expect(resolveApiKeyLibraryPath(targetWorkspace, {})).toBe(
+    expect(resolveApiKeyLibraryPath(targetWorkspace, env)).toBe(
       path.join(launchRoot, ".deep-mix", "api-key-library", "profiles.local.json"),
     );
 
-    const config = loadDeepSeekProviderConfig(targetWorkspace, {});
+    const config = loadDeepSeekProviderConfig(targetWorkspace, env);
     expect(config.baseUrl).toBe("https://deepseek-from-launch-root.invalid");
   });
 
@@ -93,11 +94,12 @@ describe("API key library resolution", () => {
     await fs.mkdir(nestedDesktopRoot, { recursive: true });
     await writeProfilesFile(launchRoot, "deepseek-from-launch-root");
     process.chdir(nestedDesktopRoot);
+    const env = { DEEP_MIX_HOME: path.join(targetWorkspace, "isolated-home") };
 
-    expect(resolveApiKeyLibraryPath(targetWorkspace, {})).toBe(
+    expect(resolveApiKeyLibraryPath(targetWorkspace, env)).toBe(
       path.join(launchRoot, ".deep-mix", "api-key-library", "profiles.local.json"),
     );
-    expect(loadDeepSeekProviderConfig(targetWorkspace, {}).baseUrl).toBe("https://deepseek-from-launch-root.invalid");
+    expect(loadDeepSeekProviderConfig(targetWorkspace, env).baseUrl).toBe("https://deepseek-from-launch-root.invalid");
   });
 
   it("uses the explicit desktop fallback root and reports the same effective profile status", async () => {
@@ -105,7 +107,7 @@ describe("API key library resolution", () => {
     const targetWorkspace = await createWorkspace("deep-mix-target-root-");
     await writeProfilesFile(launchRoot, "deepseek-from-launch-root");
     process.chdir(launchRoot);
-    const env = { DEEP_MIX_API_KEY_LIBRARY_ROOT: launchRoot };
+    const env = { DEEP_MIX_API_KEY_LIBRARY_ROOT: launchRoot, DEEP_MIX_HOME: path.join(targetWorkspace, "isolated-home") };
 
     expect(loadDeepSeekProviderConfig(targetWorkspace, env).baseUrl).toBe("https://deepseek-from-launch-root.invalid");
     expect(inspectApiKeyLibraryProfiles(targetWorkspace, [

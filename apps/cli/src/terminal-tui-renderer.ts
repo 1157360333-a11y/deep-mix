@@ -9,7 +9,7 @@ import type {
   TokenUsageSnapshot,
   ToolOutputArtifact,
 } from "../../../packages/shared-schema/src/index.js";
-import type { CliShellState, ProfileStatusReport } from "./session-shell.js";
+import type { CliShellState, ProfileStatusEntry, ProfileStatusReport } from "./session-shell.js";
 
 export type TuiMessageKind = "user" | "assistant" | "tool" | "system" | "error";
 export type TuiToolStatus = "running" | "ok" | "error";
@@ -390,7 +390,7 @@ function formatDuration(durationMs: number | undefined): string {
   return `${seconds}s`;
 }
 
-function readyLabel(profile: ProfileStatusReport[keyof ProfileStatusReport]): string {
+function readyLabel(profile: ProfileStatusEntry): string {
   if (!profile.exists) {
     return color("missing", fg(palette.danger));
   }
@@ -464,12 +464,24 @@ function renderActivityChip(activity: TerminalTuiActivityState | undefined): str
 
 function renderWelcomeBlock(state: TerminalTuiState, width: number): string[] {
   const mark = pixelMark();
+  const slotReadyLabel = (slot: "governor" | "coding" | "vision"): string => {
+    const configured = state.header?.profiles.slots?.[slot]?.primary;
+    if (configured) {
+      return `${configured.profileId}/${configured.model ?? configured.status.model ?? "?"} ${readyLabel(configured.status)}`;
+    }
+    const legacy = slot === "governor"
+      ? state.header?.profiles.deepseek_governor
+      : slot === "coding"
+        ? state.header?.profiles.glm_coding_worker
+        : state.header?.profiles.kimi_vision;
+    return legacy ? readyLabel(legacy) : "missing";
+  };
   const lines = [
     color(bold("开始输入你的任务"), fg(palette.text)),
     color("Enter 发送  ·  PgUp/PgDn 浏览消息  ·  Ctrl+T 工具详情  ·  F1 帮助", fg(palette.muted)),
     `${color("workspace", fg(palette.dim))} ${truncateMiddle(state.header?.workspaceRoot ?? "unknown", Math.max(width - 16, 12))}`,
     state.header
-      ? `${color("profiles", fg(palette.dim))} gov ${readyLabel(state.header.profiles.deepseek_governor)}  glm ${readyLabel(state.header.profiles.glm_coding_worker)}  kimi ${readyLabel(state.header.profiles.kimi_vision)}`
+      ? `${color("models", fg(palette.dim))} governor ${slotReadyLabel("governor")}  coding ${slotReadyLabel("coding")}  vision ${slotReadyLabel("vision")}`
       : color("profiles loading...", fg(palette.dim)),
   ];
   const markWidth = 10;

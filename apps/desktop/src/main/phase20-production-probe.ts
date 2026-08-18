@@ -316,7 +316,7 @@ export async function runPhase20ProductionProbe(): Promise<Phase20ProductionProb
     assertCondition(imageMetadata.width === 4 && imageMetadata.height === 3, "sharp returned unexpected PNG dimensions.");
     assertCondition(
       visionWorkerHint.automaticInvocation === false,
-      "read_image crossed the explicit Kimi Vision Worker boundary.",
+      "read_image crossed the explicit configured Vision Worker boundary.",
     );
 
     await fs.mkdir(path.join(workspaceRoot, "archive-input"));

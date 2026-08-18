@@ -214,8 +214,8 @@ describe("phase 9 CLI session loop and approval repair", () => {
       "First prompt",
       "Second prompt",
     ]);
-    expect(harness.output.buffer.startsWith("Deep-Mix v1.0.0")).toBe(true);
-    expect(harness.output.buffer.indexOf("Deep-Mix v1.0.0")).toBeLessThan(
+    expect(harness.output.buffer.startsWith("Deep-Mix v1.1.0")).toBe(true);
+    expect(harness.output.buffer.indexOf("Deep-Mix v1.1.0")).toBeLessThan(
       harness.output.buffer.indexOf("First answer."),
     );
     expect(harness.output.buffer).toContain("可继续输入。");

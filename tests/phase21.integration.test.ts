@@ -213,7 +213,10 @@ describe("phase 21 artifact, worker, and MCP resource lifecycle tools", () => {
     expect(checkpointPage1.hasMore).toBe(true);
     expect(checkpointPage1.nextCursor).toBeTruthy();
     const checkpointCursor = checkpointPage1.nextCursor!;
-    const tamperedCheckpointCursor = `${checkpointCursor.slice(0, -1)}${checkpointCursor.endsWith("A") ? "B" : "A"}`;
+    const nonCanonicalAlias: Record<string, string> = { A: "B", Q: "R", g: "h", w: "x" };
+    const cursorTail = checkpointCursor.at(-1)!;
+    expect(nonCanonicalAlias[cursorTail]).toBeTruthy();
+    const tamperedCheckpointCursor = `${checkpointCursor.slice(0, -1)}${nonCanonicalAlias[cursorTail]}`;
     requireErrorType(
       await runtime.executeManualTool(
         "list_checkpoints",
@@ -377,9 +380,9 @@ describe("phase 21 artifact, worker, and MCP resource lifecycle tools", () => {
 
   it("exposes only public worker lifecycle state and keeps cancellation terminal and idempotent", async () => {
     const fixture = await createFixture("deep-mix-phase21-workers-");
-    const standaloneSk = ["sk", "standalonePhase21Secret123456"].join("-");
-    const bearerSecret = ["Bearer", "phase21BearerCredential123456"].join(" ");
-    const bareJwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiJwaGFzZTIxIn0", "c2lnbmF0dXJlc2VjcmV0"].join(".");
+    const standaloneSk = "sk-standalonePhase21Secret123456";
+    const bearerSecret = "Bearer phase21BearerCredential123456";
+    const bareJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJwaGFzZTIxIn0.c2lnbmF0dXJlc2VjcmV0";
     const otherSession = await fixture.sessionStore.createSession("worker non-owner");
     const broker = new SpecialistBroker({ workspaceRoot: fixture.workspaceRoot, sessionStore: fixture.sessionStore });
     const runtime = trackedRuntime(new ToolRuntime({

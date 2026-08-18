@@ -1,6 +1,6 @@
 {
   "name": "deep-mix",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "A local-first multi-model coding-agent runtime with one governor, isolated specialist workers, and permissioned tool execution.",
   "license": "Apache-2.0",
@@ -71,6 +71,7 @@
     "verify:phase19": "vitest run tests/phase19.integration.test.ts --maxWorkers=1 --fileParallelism=false",
     "verify:phase20": "vitest run tests/phase20.integration.test.ts tests/phase20.spreadsheet-read.test.ts tests/phase20.spreadsheet-write.test.ts tests/phase20.presentation.test.ts tests/phase20.notebook.test.ts tests/phase20.image.test.ts tests/phase20.archive.test.ts tests/phase20.conversion.test.ts tests/phase20.selection.test.ts apps/desktop/src/main/document-attachment-import.test.ts tests/desktop-display-history.unit.test.ts --maxWorkers=1 --fileParallelism=false && npm --prefix apps/desktop run verify:phase20-production",
     "verify:phase21": "vitest run tests/phase21.integration.test.ts tests/phase21.security.test.ts --maxWorkers=1 --fileParallelism=false",
+    "verify:phase22": "vitest run tests/phase22.integration.test.ts --maxWorkers=1 --fileParallelism=false",
     "verify:phase14": "vitest run tests/phase14.baseline.test.ts tests/phase14.integration.test.ts tests/phase14.document-selection.test.ts tests/phase14.read-pdf.test.ts tests/phase14.read-docx.test.ts tests/phase14.write-pdf.test.ts tests/phase14.write-docx.test.ts tests/web-search.integration.test.ts tests/tool-network-service.unit.test.ts tests/runtime-reliability.regression.test.ts tests/phase12.integration.test.ts tests/desktop-display-history.unit.test.ts apps/desktop/src/main/document-attachment-import.test.ts apps/desktop/src/main/network-service.test.ts --maxWorkers=1 --fileParallelism=false && npm --prefix apps/desktop run verify:pdf-production"
   },
   "devDependencies": {
@@ -82,7 +83,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.5",
     "http-proxy-agent": "^9.1.0",
     "proxy-agent": "^8.0.2",
     "sharp": "^0.35.3"

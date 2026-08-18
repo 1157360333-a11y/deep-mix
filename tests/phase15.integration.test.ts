@@ -711,7 +711,7 @@ describe("phase 15 tool discovery, interaction, and repository enhancements", ()
       fallbacks: { listFiles: "rg", searchFiles: "node_text" },
     } as RuntimeCapabilitySnapshot;
     await fixture.sessionStore.saveRuntimeCapabilities(snapshot);
-    const snapshotPath = path.join(fixture.workspaceRoot, ".deep-mix", "runtime-capabilities.json");
+    const snapshotPath = fixture.sessionStore.paths.runtimeCapabilitiesPath;
     const before = await fs.readFile(snapshotPath, "utf8");
     const runtime = createRuntime(fixture);
     const result = await runtime.executeManualTool(

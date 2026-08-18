@@ -25,15 +25,17 @@ async function createRuntime(input?: {
   const sessionStore = new SessionStore(workspaceRoot);
   await sessionStore.ensureInitialized();
   if (input?.settings) {
+    const projectSettingsPath = path.join(workspaceRoot, ".deep-mix", "settings.json");
+    await fs.mkdir(path.dirname(projectSettingsPath), { recursive: true });
     await fs.writeFile(
-      path.join(workspaceRoot, ".deep-mix", "settings.json"),
+      projectSettingsPath,
       JSON.stringify(input.settings),
       "utf8",
     );
   }
   if (input?.networkDisabled) {
     await fs.writeFile(
-      path.join(workspaceRoot, ".deep-mix", "permission-policy.json"),
+      path.join(sessionStore.paths.stateDir, "permission-policy.json"),
       JSON.stringify({
         version: 1,
         workspaceWriteRoots: ["."],

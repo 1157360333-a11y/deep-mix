@@ -1,5 +1,26 @@
 export type RouteRole = "governor" | "coding_worker" | "vision_worker";
-export type RouteTarget = "ds_direct" | "glm_coding" | "kimi_vision";
+export type ModelSlotId = "governor" | "coding" | "vision";
+export type SemanticRouteTarget = "governor_direct" | "coding_worker" | "vision_worker";
+export type LegacyRouteTarget = "ds_direct" | "glm_coding" | "kimi_vision";
+/** Read boundary accepting legacy aliases. Routing decisions and new writes use SemanticRouteTarget. */
+export type RouteTarget = SemanticRouteTarget | LegacyRouteTarget;
+export type RouteTargetInput = RouteTarget;
+export type ModelFallbackTrigger =
+  | "configuration"
+  | "capability"
+  | "connection"
+  | "rate_limit"
+  | "timeout"
+  | "provider_error"
+  | "invalid_response";
+export type ModelNonReplayableReason =
+  | "user_cancelled"
+  | "permission_denied"
+  | "visible_stream_started"
+  | "tool_side_effect"
+  | "artifact_published"
+  | "invalid_input";
+export type ModelSelectionReason = "primary" | "ordered_fallback" | "classic_preset" | "legacy_migration" | "environment_override";
 export type ToolCallingMode = "disabled" | "runtime_mediated" | "provider_native";
 export type ThinkingModeType = "disabled" | "enabled" | "adaptive";
 export type ReasoningEffort = "not_applicable" | "low" | "medium" | "high";
@@ -89,6 +110,9 @@ export type TelemetryMetricName =
   | "revision_count"
   | "fallback_rate"
   | "diagnostic_failure_count"
+  | "model_invocation"
+  | "governor_direct_success_count"
+  /** Legacy metric name retained for old event decoding only. */
   | "direct_ds_success_count";
 export type SkillScope = "project" | "project_compat" | "user" | "user_compat" | "built_in";
 export type WorkflowScope = "project" | "user" | "built_in";
@@ -130,7 +154,87 @@ export interface RuntimeEvent {
 
 export interface DeepMixDefaultSettings {
   permissionMode?: PermissionMode;
-  routeOverride?: RouteTarget;
+  routeOverride?: RouteTargetInput;
+}
+
+export interface ModelCapabilityManifest {
+  textInput: boolean;
+  imageInput: boolean;
+  streaming: boolean;
+  nativeToolCalling: boolean;
+  structuredOutput: boolean;
+  reasoning: boolean;
+  contextWindow: number;
+}
+
+export interface ModelProfileRef {
+  profile: string;
+  model?: string;
+  /** Resolution evidence only; persisted bindings normally omit this field. */
+  adapter?: string;
+  /** Resolution evidence only; persisted bindings normally omit this field. */
+  protocol?: string;
+}
+
+export interface ModelFallbackPolicy {
+  enabled: boolean;
+  on: ModelFallbackTrigger[];
+  allowGovernorDirectFallback?: boolean;
+}
+
+export interface ModelSlotBinding {
+  primary: ModelProfileRef;
+  fallbacks: ModelProfileRef[];
+  parameters?: Record<string, string | number | boolean>;
+  fallbackPolicy?: ModelFallbackPolicy;
+  requirements?: Partial<Omit<ModelCapabilityManifest, "contextWindow">> & {
+    minimumContextWindow?: number;
+  };
+}
+
+export interface DeepMixModelSlots {
+  governor: ModelSlotBinding;
+  coding: ModelSlotBinding;
+  vision: ModelSlotBinding;
+}
+
+export interface DeepMixModelSettings {
+  preset: "classic" | "custom";
+  slots: DeepMixModelSlots;
+}
+
+export interface ModelAssignmentSnapshot {
+  readonly schemaVersion: 1;
+  readonly assignmentId: string;
+  readonly configRevision: number;
+  readonly slot: ModelSlotId;
+  readonly routeTarget: SemanticRouteTarget;
+  readonly profileId: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly adapterId: string;
+  readonly protocol: string;
+  readonly capabilities: Readonly<ModelCapabilityManifest>;
+  readonly selectedAt: string;
+  readonly selectionReason: ModelSelectionReason;
+  readonly fallbackIndex: number;
+  readonly source: "settings" | "classic" | "legacy" | "environment";
+}
+
+export interface ModelAssignmentAttempt {
+  snapshot: ModelAssignmentSnapshot;
+  outcome: "selected" | "failed" | "blocked";
+  failureType?: ModelFallbackTrigger | ModelNonReplayableReason | "adapter_not_found";
+  redactedReason?: string;
+}
+
+export interface ModelRoutingErrorShape {
+  code: "adapter_not_found" | "capability_unavailable" | "profile_unavailable" | "fallback_forbidden" | "provider_failure";
+  slot: ModelSlotId;
+  profileId?: string;
+  adapterId?: string;
+  retryable: boolean;
+  redactedReason: string;
 }
 
 export interface DeepMixGovernorSettings {
@@ -181,6 +285,11 @@ export interface DeepMixSkillSettings {
   enabledSkills?: Record<string, boolean>;
 }
 
+/** Desktop-only preferences persisted alongside each workspace's settings. */
+export interface DeepMixDesktopSettings {
+  shortcuts?: Record<string, string | null>;
+}
+
 export interface DeepMixWebSearchSettings {
   braveApiKey?: string;
 }
@@ -208,25 +317,20 @@ export interface DeepMixCodeIntelligenceSettings {
   externalEmbedding?: DeepMixExternalEmbeddingSettings;
 }
 
-export interface DeepMixExperimentalSettings {
-  /**
-   * Enables managed background processes such as development servers and watchers.
-   * Disabled by default because child-process containment is not a security sandbox.
-   */
-  managedProcesses?: boolean;
-}
-
 export interface DeepMixSettings {
-  version?: 1;
+  version?: 1 | 2;
+  /** Monotonic compare-and-swap revision for version 2 settings. */
+  revision?: number;
+  models?: DeepMixModelSettings;
   defaults?: DeepMixDefaultSettings;
   governor?: DeepMixGovernorSettings;
   codingWorker?: DeepMixCodingWorkerSettings;
   visionWorker?: DeepMixVisionWorkerSettings;
   skills?: DeepMixSkillSettings;
+  desktop?: DeepMixDesktopSettings;
   webSearch?: DeepMixWebSearchSettings;
   git?: DeepMixGitSettings;
   codeIntelligence?: DeepMixCodeIntelligenceSettings;
-  experimental?: DeepMixExperimentalSettings;
   enabledSkills?: Record<string, boolean>;
 }
 
@@ -679,17 +783,23 @@ export interface RoutingFeatures {
 
 export interface RoutingDecision {
   mode: RoutingDecisionMode;
-  automaticTarget: RouteTarget;
-  finalTarget: RouteTarget;
-  overrideTarget?: RouteTarget;
+  automaticTarget: SemanticRouteTarget;
+  finalTarget: SemanticRouteTarget;
+  overrideTarget?: SemanticRouteTarget;
   ruleId: string;
   reasonCodes: RoutingReasonCode[];
   reasonSummary: string;
   features: RoutingFeatures;
 }
 
-export interface DeepSeekProviderConfig {
+export interface GovernorModelConfig {
   apiKey?: string;
+  /** Compatibility interface; v2 runtime resolves these brand-neutral fields. */
+  profileId?: string;
+  provider?: string;
+  adapterId?: string;
+  protocol?: string;
+  capabilities?: ModelCapabilityManifest;
   baseUrl: string;
   model: string;
   role: "governor";
@@ -710,8 +820,13 @@ export interface DeepSeekProviderConfig {
     type: ThinkingModeType;
     reasoningEffort: ReasoningEffort;
   };
+  headers?: Record<string, string>;
+  requestDefaults?: Record<string, unknown>;
   replyStyle?: ReplyStyle;
 }
+
+/** @deprecated Classic compatibility alias. New runtime code uses GovernorModelConfig. */
+export type DeepSeekProviderConfig = GovernorModelConfig;
 
 export interface WorkerSummaryRef {
   refType: "summary";
@@ -742,6 +857,8 @@ export interface SessionRecord {
   sessionId: string;
   title: string;
   titleSource?: "prompt" | "placeholder" | "generated" | "user";
+  /** Auto-title algorithm version; absent records were generated by the legacy truncated-input path. */
+  titleGenerationVersion?: number;
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -1010,6 +1127,8 @@ export interface TurnRecord {
   userMessageId: string;
   assistantMessageId?: string;
   toolCallIds: string[];
+  /** Immutable, redacted model selection fixed when this turn starts. */
+  modelAssignment?: ModelAssignmentSnapshot;
   error?: string;
 }
 
@@ -1110,6 +1229,8 @@ export interface RoutingDecisionRecord extends RoutingDecision {
   sessionId: string;
   turnId: string;
   createdAt: string;
+  /** Preserved only when a legacy stored target was normalized during read. */
+  legacyTarget?: LegacyRouteTarget;
 }
 
 export interface DiagnosticIssue {
@@ -1827,6 +1948,8 @@ export interface WorkerSessionRecord {
   parentSessionId: string;
   workerType: WorkerType;
   route: RouteProfile;
+  /** Immutable, redacted model selection fixed for this dispatch. */
+  modelAssignment?: ModelAssignmentSnapshot;
   status: WorkerSessionStatus;
   /** Monotonic state-transition version used for cancellation and completion race checks. */
   statusVersion?: number;

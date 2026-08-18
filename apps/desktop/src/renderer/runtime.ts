@@ -16,6 +16,7 @@ import type {
   DesktopSettingsPatch,
   WorkerStatusView,
 } from "@shared/ipc";
+import { DEFAULT_DESKTOP_SHORTCUTS } from "@shared/shortcut-config";
 
 const now = new Date();
 const iso = (offsetMinutes = 0) => new Date(now.getTime() - offsetMinutes * 60_000).toISOString();
@@ -28,7 +29,7 @@ function createMockRuntime(): DesktopRuntime {
       status: "waiting_for_user",
       createdAt: iso(96),
       updatedAt: iso(2),
-      workspaceRoot: "C:\\workspace\\deep-mix",
+      workspaceRoot: "C:\\workspace\\deepcode",
       jsonlPath: "sessions/session-aurora.jsonl",
       messageCount: 4,
       planItems: [
@@ -91,7 +92,7 @@ function createMockRuntime(): DesktopRuntime {
       status: "completed",
       createdAt: iso(480),
       updatedAt: iso(240),
-      workspaceRoot: "C:\\workspace\\sample-project",
+      workspaceRoot: "C:\\workspace\\STATAU-linux",
       jsonlPath: "sessions/session-runtime.jsonl",
       messageCount: 12,
       planItems: [],
@@ -110,17 +111,33 @@ function createMockRuntime(): DesktopRuntime {
   ];
 
   let settings: DesktopSettings = {
-    workspaceRoot: "C:\\workspace\\deep-mix",
-    workspaceName: "deep-mix",
+    workspaceRoot: "C:\\workspace\\deepcode",
+    workspaceName: "deepcode",
     gitBranch: "main",
     permissionMode: "auto",
     reasoningEffort: "high",
     thinkingMode: "adaptive",
     replyStyle: "pragmatic",
+    shortcuts: { ...DEFAULT_DESKTOP_SHORTCUTS },
     profiles: {
       deepseek_governor: { exists: true, hasKey: true },
       glm_coding_worker: { exists: true, hasKey: true },
       kimi_vision: { exists: true, hasKey: true },
+    },
+    models: {
+      preset: "classic",
+      revision: 0,
+      profileRevision: 0,
+      candidates: [
+        { profileId: "deepseek_governor", displayName: "经典总线接入", status: { exists: true, hasKey: true, provider: "deepseek", model: "deepseek-chat", adapterId: "deepseek_compat", allowedSlots: ["governor"], capabilities: { textInput: true, imageInput: false, streaming: true, nativeToolCalling: true, structuredOutput: false, reasoning: true, contextWindow: 128000 } } },
+        { profileId: "glm_coding_worker", displayName: "经典编程接入", status: { exists: true, hasKey: true, provider: "glm", model: "glm-5.2", adapterId: "glm_compat", allowedSlots: ["coding"], capabilities: { textInput: true, imageInput: false, streaming: false, nativeToolCalling: false, structuredOutput: true, reasoning: false, contextWindow: 128000 } } },
+        { profileId: "kimi_vision", displayName: "经典视觉接入", status: { exists: true, hasKey: true, provider: "kimi", model: "kimi-vision", adapterId: "kimi_compat", allowedSlots: ["vision"], capabilities: { textInput: true, imageInput: true, streaming: false, nativeToolCalling: false, structuredOutput: true, reasoning: false, contextWindow: 256000 } } },
+      ],
+      slots: {
+        governor: { slot: "governor", primary: { profileId: "deepseek_governor", displayName: "经典总线接入", status: { exists: true, hasKey: true, provider: "deepseek", model: "deepseek-chat", adapterId: "deepseek_compat", allowedSlots: ["governor"] } }, fallbacks: [], fallbackEnabled: false, requiredCapabilities: ["textInput", "streaming", "nativeToolCalling"] },
+        coding: { slot: "coding", primary: { profileId: "glm_coding_worker", displayName: "经典编程接入", status: { exists: true, hasKey: true, provider: "glm", model: "glm-5.2", adapterId: "glm_compat", allowedSlots: ["coding"] } }, fallbacks: [], fallbackEnabled: false, requiredCapabilities: ["textInput", "structuredOutput"] },
+        vision: { slot: "vision", primary: { profileId: "kimi_vision", displayName: "经典视觉接入", status: { exists: true, hasKey: true, provider: "kimi", model: "kimi-vision", adapterId: "kimi_compat", allowedSlots: ["vision"] } }, fallbacks: [], fallbackEnabled: false, requiredCapabilities: ["textInput", "imageInput", "structuredOutput"] },
+      },
     },
     extensions: [
       { id: "skill:frontend-polish", name: "frontend-polish", description: "界面实现与视觉回归工作流", kind: "skill", enabled: true, state: "ready", source: "project" },
@@ -204,6 +221,7 @@ function createMockRuntime(): DesktopRuntime {
       callbacks.toolStart?.({ sessionId: id, turnId: "current", toolCall: { id: "mock-tool", name: "repository_explorer", arguments: {}, rawArguments: "{}" } });
       window.setTimeout(() => callbacks.toolEnd?.({ sessionId: id, turnId: "current", result: { toolName: "repository_explorer", callId: "mock-tool", startedAt: iso(0), endedAt: iso(0), success: true, output: "Workspace inspected" } }), 650);
       window.setTimeout(() => callbacks.streamText?.({ sessionId: id, turnId: "current", chunk: `收到：${prompt}` }), 850);
+      return { sessionId: id };
     },
     interruptSession: async () => undefined,
     listManagedProcesses: async () => [],
@@ -219,7 +237,7 @@ function createMockRuntime(): DesktopRuntime {
       },
     }),
     undoSession: async () => ({ success: true, output: "已恢复最近的代码与会话检查点。" }),
-    exportSession: async () => ({ cancelled: false, outputPath: "C:\\workspace\\deep-mix\\session-export.md" }),
+    exportSession: async () => ({ cancelled: false, outputPath: "C:\\workspace\\deepcode\\session-export.md" }),
     compactSession: async (sessionId) => {
       const session = sessions.find((entry) => entry.sessionId === sessionId);
       if (session) {
@@ -272,16 +290,57 @@ function createMockRuntime(): DesktopRuntime {
       ? { ...settings, workspaceRoot, workspaceName: workspaceRoot.split(/[\\/]/).pop() ?? workspaceRoot, gitBranch: undefined }
       : settings,
     updateSettings: async (patch: DesktopSettingsPatch, workspaceRoot) => {
+      const { models: modelPatch, shortcuts: shortcutPatch, ...scalarPatch } = patch;
       settings = {
         ...settings,
         ...(workspaceRoot ? { workspaceRoot, workspaceName: workspaceRoot.split(/[\\/]/).pop() ?? workspaceRoot } : {}),
-        ...patch,
-        routeOverride: patch.routeOverride === null ? undefined : patch.routeOverride ?? settings.routeOverride,
+        ...scalarPatch,
+        ...(shortcutPatch ? { shortcuts: { ...settings.shortcuts, ...shortcutPatch } } : {}),
         extensions: settings.extensions.map((extension) => {
           if (extension.kind !== "skill" || !patch.enabledSkills) return extension;
           return { ...extension, enabled: patch.enabledSkills[extension.name] ?? extension.enabled };
         }),
       };
+      if (modelPatch) {
+        if (modelPatch.restoreClassic) {
+          settings = { ...settings, models: { ...settings.models, preset: "classic", revision: settings.models.revision + 1 } };
+        } else if (modelPatch.slot && modelPatch.primaryProfileId) {
+          const primary = settings.models.candidates.find((entry) => entry.profileId === modelPatch.primaryProfileId)
+            ?? { profileId: modelPatch.primaryProfileId, status: { exists: false, hasKey: false } };
+          const fallbacks = (modelPatch.fallbackProfileIds ?? []).map((profileId) => settings.models.candidates.find((entry) => entry.profileId === profileId)
+            ?? { profileId, status: { exists: false, hasKey: false } });
+          settings = { ...settings, models: {
+            ...settings.models,
+            preset: "custom",
+            revision: settings.models.revision + 1,
+            slots: { ...settings.models.slots, [modelPatch.slot]: {
+              ...settings.models.slots[modelPatch.slot],
+              primary: { ...primary, ...(modelPatch.primaryModel ? { model: modelPatch.primaryModel } : {}) },
+              fallbacks,
+              fallbackEnabled: fallbacks.length > 0,
+            } },
+          } };
+        }
+      }
+      return settings;
+    },
+    probeModel: async (profileId) => ({ profileId, ok: true, adapterId: "mock_adapter", latencyMs: 8 }),
+    saveModelProfile: async (input) => {
+      const status = { exists: true, hasKey: true, provider: input.provider, model: input.model, adapterId: input.adapterId, allowedSlots: [input.slot], capabilities: input.capabilities };
+      const reference = { profileId: input.profileId, displayName: input.displayName, status };
+      settings = { ...settings, models: {
+        ...settings.models,
+        preset: "custom",
+        revision: settings.models.revision + 1,
+        profileRevision: settings.models.profileRevision + 1,
+        candidates: [...settings.models.candidates.filter((entry) => entry.profileId !== input.profileId), reference],
+        slots: { ...settings.models.slots, [input.slot]: {
+          ...settings.models.slots[input.slot],
+          primary: reference,
+          fallbacks: [],
+          fallbackEnabled: false,
+        } },
+      } };
       return settings;
     },
     chooseAttachments: async () => [],
