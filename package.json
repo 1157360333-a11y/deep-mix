@@ -75,7 +75,7 @@
     "verify:phase14": "vitest run tests/phase14.baseline.test.ts tests/phase14.integration.test.ts tests/phase14.document-selection.test.ts tests/phase14.read-pdf.test.ts tests/phase14.read-docx.test.ts tests/phase14.write-pdf.test.ts tests/phase14.write-docx.test.ts tests/web-search.integration.test.ts tests/tool-network-service.unit.test.ts tests/runtime-reliability.regression.test.ts tests/phase12.integration.test.ts tests/desktop-display-history.unit.test.ts apps/desktop/src/main/document-attachment-import.test.ts apps/desktop/src/main/network-service.test.ts --maxWorkers=1 --fileParallelism=false && npm --prefix apps/desktop run verify:pdf-production"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.2.0",
     "@types/yauzl": "^3.4.0",
     "exceljs": "npm:@mui/x-internal-exceljs-fork@5.0.0",
     "tsx": "^4.20.3",
