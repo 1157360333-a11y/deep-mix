@@ -34,6 +34,34 @@ function truncate(value: string, maxChars: number): string {
   return characters.length <= maxChars ? value : characters.slice(0, maxChars).join("");
 }
 
+const TITLE_BOUNDARY_CHARACTERS = new Set(["`", '"', "'", "“", "”", "‘", "’"]);
+
+function stripLeadingMarkdownHeading(value: string): string {
+  let headingLength = 0;
+  while (headingLength < 6 && value[headingLength] === "#") headingLength += 1;
+  if (headingLength === 0) return value;
+  let contentStart = headingLength;
+  while (contentStart < value.length && /\s/u.test(value[contentStart]!)) contentStart += 1;
+  return value.slice(contentStart);
+}
+
+function stripTitleBoundaryCharacters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && TITLE_BOUNDARY_CHARACTERS.has(value[start]!)) start += 1;
+  while (end > start && TITLE_BOUNDARY_CHARACTERS.has(value[end - 1]!)) end -= 1;
+  return value.slice(start, end);
+}
+
+function isDesktopAttachmentLine(value: string): boolean {
+  if (!value.startsWith("-")) return false;
+  const fileMarker = value.indexOf(": file:");
+  if (fileMarker < 0) return false;
+  const openParenthesis = value.indexOf("(");
+  const closeParenthesis = openParenthesis < 0 ? -1 : value.indexOf(")", openParenthesis + 1);
+  return openParenthesis > 0 && closeParenthesis > openParenthesis && closeParenthesis < fileMarker;
+}
+
 export function normalizeGeneratedSessionTitle(raw: string): string | undefined {
   const firstLine = raw
     .split(/\r?\n/u)
@@ -41,15 +69,13 @@ export function normalizeGeneratedSessionTitle(raw: string): string | undefined 
     .find(Boolean);
   if (!firstLine) return undefined;
 
-  const cleaned = firstLine
-    .replace(/^#{1,6}\s*/u, "")
+  const cleaned = stripTitleBoundaryCharacters(stripLeadingMarkdownHeading(firstLine)
     .replace(/^(?:标题|会话标题|任务标题|title)\s*[:：-]\s*/iu, "")
-    .replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/gu, "")
     .replace(/\p{Extended_Pictographic}/gu, "")
     .replace(/[\u200D\uFE0E\uFE0F]/gu, "")
     .replace(/\s+/gu, " ")
     .replace(/[。.!！?？;；,:：]+$/gu, "")
-    .trim();
+    .trim());
   const normalized = /\p{Script=Han}/u.test(cleaned)
     ? truncate(cleaned, 18)
     : truncate(cleaned.split(/\s+/u).slice(0, 10).join(" "), 80);
@@ -64,10 +90,9 @@ export function createFallbackSessionTitle(userRequest: string): string {
   const firstRequestLine = userRequest
     .split(/\r?\n/u)
     .map((line) => line.trim())
-    .find((line) => line && line !== "[Desktop attachments]" && !/^-\s+.+\([^)]*\):\s*file:/iu.test(line))
+    .find((line) => line && line !== "[Desktop attachments]" && !isDesktopAttachmentLine(line))
     ?? "";
-  const cleaned = firstRequestLine
-    .replace(/^#{1,6}\s*/u, "")
+  const cleaned = stripLeadingMarkdownHeading(firstRequestLine)
     .replace(/^(?:hi|hello|你好|您好)[,，:：!！\s]*/iu, "")
     .replace(/^(?:请问|请帮我|麻烦你|麻烦|我想要?|我需要|希望你|请)\s*/u, "")
     .replace(/((?:进一步|继续)?(?:优化|修复|排查|实现|新增|开发|重构|分析|整理|部署|升级))(?:这个|该|此)/u, "$1")

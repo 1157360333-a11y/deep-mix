@@ -243,7 +243,9 @@ function classifyStatus(status: number): { failureType: ModelFallbackTrigger; re
 }
 
 function endpoint(profile: ResolvedModelProfile): string {
-  const base = profile.baseUrl.replace(/\/+$/, "");
+  let baseEnd = profile.baseUrl.length;
+  while (baseEnd > 0 && profile.baseUrl[baseEnd - 1] === "/") baseEnd -= 1;
+  const base = profile.baseUrl.slice(0, baseEnd);
   const endpointPath = profile.endpointPath.startsWith("/") ? profile.endpointPath : `/${profile.endpointPath}`;
   return `${base}${endpointPath}`;
 }

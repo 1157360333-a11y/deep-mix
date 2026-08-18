@@ -609,8 +609,13 @@ function createTelemetrySummary(): TelemetrySummary {
 }
 
 function safeTelemetryDimension(value: string): string {
-  return value
-    .replace(/[?#].*$/u, "")
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const cutoff = [queryIndex, fragmentIndex].filter((index) => index >= 0).reduce(
+    (lowest, index) => Math.min(lowest, index),
+    value.length,
+  );
+  return value.slice(0, cutoff)
     .replace(/[\u0000-\u001f\u007f]/gu, "")
     .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(/\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b/gu, "[REDACTED_KEY]")
