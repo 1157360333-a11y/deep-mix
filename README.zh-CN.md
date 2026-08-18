@@ -8,6 +8,10 @@ Deep-Mix 是一个本地优先的多模型 coding agent runtime。可配置的 `
 
 ![Deep-Mix 桌面端深色模式](docs/assets/desktop-dark.png)
 
+| v1.1.0 模型中心 | 可配置键盘快捷键 |
+| --- | --- |
+| ![Deep-Mix 模型中心](docs/assets/settings-models-light.png) | ![Deep-Mix 键盘快捷键](docs/assets/settings-shortcuts-dark.png) |
+
 ## 它解决什么问题
 
 Deep-Mix 不只是把提示词路由给多个模型，而是把多模型协作做成一套可审计的 runtime：

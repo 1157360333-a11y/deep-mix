@@ -8,6 +8,10 @@ Deep-Mix is a local-first, multi-model coding-agent runtime. A configurable `gov
 
 ![Deep-Mix desktop in light mode](docs/assets/desktop-light.png)
 
+| v1.1.0 model center | Configurable keyboard shortcuts |
+| --- | --- |
+| ![Deep-Mix model center](docs/assets/settings-models-light.png) | ![Deep-Mix keyboard shortcuts](docs/assets/settings-shortcuts-dark.png) |
+
 ## Why Deep-Mix
 
 Most multi-model demos route a prompt and concatenate answers. Deep-Mix treats orchestration as a runtime problem:
